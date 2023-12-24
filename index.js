@@ -29,7 +29,7 @@ if (!GCS_BUCKET) throw new Error('GCS_BUCKET is required');
 // <-- TODO: make this dynamic ?!?!?
 const URL = process.env.URL || `https://ga4-mixpanel-lmozz6xkha-uc.a.run.app`;
 
-const dateLabelLong = dayjs.utc().format('MM-DD-HH-mm');
+const dateLabelLong = dayjs.utc().format('MM-DD-HH:mm');
 const dateLabelShort = dayjs.utc().format('YYYYMMDD');
 const filePrefix = `tempFile`;
 const fileName = `${filePrefix}-${dateLabelLong}-`;
