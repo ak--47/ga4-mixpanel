@@ -42,7 +42,7 @@ let BQ_TABLE_ID = process.env.BQ_TABLE_ID || "";
 let CONCURRENCY = parseInt(process.env.CONCURRENCY || "30");
 let LATE = parseInt(process.env.LATE || "60");
 let LOOKBACK = parseInt(process.env.LOOKBACK || "3600");
-let INTRADAY = process.env.INTRADAY || true;
+let INTRADAY = true;
 let DATE = process.env.DATE || dateLabelShort;
 
 
@@ -130,11 +130,10 @@ export async function EXTRACT_JOB() {
 	const watch = timer('SYNC');
 	watch.start();
 	try {
-		const query = buildSQLQuery(BQ_TABLE_ID, INTRADAY, LOOKBACK, LATE);
+		const query = await buildSQLQuery(BQ_TABLE_ID, INTRADAY, LOOKBACK, LATE);
 		sLog(`RUNNING QUERY:`, { query });
-		const uris = await exportQueryResultToGCS(BQ_TABLE_ID);
+		const uris = await exportQueryResultToGCS(query);
 		const tasks = await loadGCSToMixpanel(uris);
-
 		sLog(`SYNC COMPLETE: ${watch.end()}`, uris);
 		return { uris, ...tasks };
 
@@ -149,23 +148,24 @@ export async function EXTRACT_JOB() {
  * @param  {number} [lookBackWindow=3600]
  * @param  {number} [late=60]
  */
-function buildSQLQuery(TABLE_ID, intraday = false, lookBackWindow = 3600, late = 60) {
+async function buildSQLQuery(TABLE_ID, intraday = false, lookBackWindow = 3600, late = 60) {
 	// i.e. intraday vs full day
 	// .events_intraday_*
 	// .events_*  or .events_20231222
-	if (typeof intraday !== 'boolean') intraday = stringToBoolean(intraday);
 	let query = `SELECT * FROM \`${GCP_PROJECT}.${BQ_DATASET_ID}.`;
 	if (intraday) query += `events_intraday_*\``;
-	if (intraday) query += `\nWHERE\nTIMESTAMP_DIFF(CURRENT_TIMESTAMP(), TIMESTAMP_MILLIS(CAST(event_timestamp / 1000 as INT64)), SECOND) <= ${lookBackWindow} `;
-	if (intraday) query += `\nOR\n(event_server_timestamp_offset > ${late * 1000000} AND TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), TIMESTAMP_MILLIS(CAST(event_timestamp / 1000 as INT64)), SECOND) <= ${lookBackWindow * 2})`;
 	if (!intraday) query += `${TABLE_ID}\``;
-	return query;
+
+	// INTRADAY WHERE CLAUSE
+	if (intraday) query += `\nWHERE\n(TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), TIMESTAMP_MILLIS(CAST(event_timestamp / 1000 as INT64)), SECOND) <= ${lookBackWindow})`;
+	if (intraday) query += `\nOR\n(event_server_timestamp_offset > ${late * 1000000} AND TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), TIMESTAMP_MILLIS(CAST(event_timestamp / 1000 as INT64)), SECOND) <= ${lookBackWindow * 2})`;
+	
+	return Promise.resolve(query);
 }
 
-export async function exportQueryResultToGCS(BQ_TABLE_ID) {
+async function exportQueryResultToGCS(query) {
 	const watch = timer('bigquery');
 	watch.start();
-	const query = buildSQLQuery(BQ_TABLE_ID);
 	const jobConfig = {
 		query,
 		location: 'US', // Change this to match your dataset's location
@@ -195,7 +195,6 @@ export async function exportQueryResultToGCS(BQ_TABLE_ID) {
 
 	const [files] = await storage.bucket(GCS_BUCKET).getFiles({ "prefix": fileName });
 	const uris = files.map(file => `gs://${GCS_BUCKET}/${file.name}`);
-
 
 	sLog(`BIGQUERY EXPORT: ${watch.end()}`, exportJob);
 
@@ -344,9 +343,6 @@ async function deleteAllFilesFromBucket() {
 	sLog(`STORAGE DELETE: ${watch.end()}`);
 	return deleted;
 }
-
-
-
 
 
 function stringToBoolean(string) {
