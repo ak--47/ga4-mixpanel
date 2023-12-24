@@ -28,10 +28,10 @@ if (!GCS_BUCKET) throw new Error('GCS_BUCKET is required');
 if (!MP_TOKEN && !MP_SECRET) throw new Error('MP_TOKEN or MP_SECRET is required');
 
 // <-- TODO: make this dynamic ?!?!?
-const URL = `https://ga4-mixpanel-lmozz6xkha-uc.a.run.app`;
+const URL = process.env.URL || `https://ga4-mixpanel-lmozz6xkha-uc.a.run.app`;
 
 const dateLabelLong = dayjs.utc().format('YYYY-MM-DD-HH:mm');
-const dateLabelShort = "_" + dayjs.utc().format('YYYYMMDD');
+const dateLabelShort = dayjs.utc().format('YYYYMMDD');
 const fileName = `${dateLabelLong}-tempFile-`;
 const bigquery = new BigQuery({ projectId: GCP_PROJECT });
 const storage = new Storage({ projectId: GCP_PROJECT });
@@ -76,11 +76,11 @@ functions.http('go', async (req, res) => {
 			BQ_TABLE_ID = req.query.table || BQ_TABLE_ID;
 			LOOKBACK = req.query.lookback ? Number(req.query.lookback) : LOOKBACK;
 			LATE = req.query.late ? Number(req.query.late) : LATE;
-			INTRADAY = !isNil(req.query.intraday) ? stringToBoolean(req.query.intraDay) : INTRADAY;
+			INTRADAY = !isNil(req.query.intraday) ? stringToBoolean(req.query.intraday) : INTRADAY;
 			DATE = req.query.date ? dayjs(req.query.date).format('YYYYMMDD') : DATE;
 			CONCURRENCY = req.query.concurrency ? Number(req.query.CONCURRENCY) : CONCURRENCY;
 
-			if (!BQ_TABLE_ID) throw new Error('BQ_TABLE_ID is required');
+			if (!BQ_TABLE_ID) BQ_TABLE_ID = `events_${DATE}`; //date = today if not specified
 			sLog('SYNC START', { BQ_TABLE_ID, LOOKBACK, LATE, INTRADAY, DATE, CONCURRENCY });
 			const extractResult = await EXTRACT();
 
@@ -99,7 +99,7 @@ functions.http('go', async (req, res) => {
 		return;
 
 	} catch (err) {
-		console.error(err); // Log the error for debugging
+		sLog("Bad Path", req, "CRITICAL")
 		res.status(500).send({ error: err.message }); // Send back a JSON error message
 	}
 });
@@ -116,6 +116,7 @@ export async function EXTRACT() {
 	watch.start();
 	try {
 		const query = buildSQLQuery(BQ_TABLE_ID, INTRADAY, LOOKBACK, LATE);
+		sLog(`RUNNING QUERY:`, { query });
 		const uris = await exportQueryResultToGCS(BQ_TABLE_ID, query);
 		const tasks = await loadGCSToMixpanel(uris);
 
@@ -123,7 +124,7 @@ export async function EXTRACT() {
 		return { uris, ...tasks };
 
 	} catch (error) {
-		console.error(`SYNC FAIL: ${watch.end()}`, { error: error.message });
+		sLog(`SYNC FAIL: ${watch.end()}`, { error: error.message }, 'CRITICAL');
 		throw error;
 	}
 }
@@ -132,11 +133,11 @@ function buildSQLQuery(TABLE_ID, intraDay = false, lookBackWindow = 3600, late =
 	// i.e. intraday vs full day
 	// .events_intraday_*
 	// .events_*  or .events_20231222
-	let query = `SELECT * FROM \`${GCP_PROJECT}.${BQ_DATASET_ID}`;
-	if (intraDay) query += `.events_intraday_*\``;
+	let query = `SELECT * FROM \`${GCP_PROJECT}.${BQ_DATASET_ID}.`;
+	if (intraDay) query += `events_intraday_*\``;
 	if (intraDay) query += `\nWHERE\nTIMESTAMP_DIFF(CURRENT_TIMESTAMP(), TIMESTAMP_MILLIS(CAST(event_timestamp / 1000 as INT64)), SECOND) <= ${lookBackWindow} `;
 	if (intraDay) query += `\nOR\n(event_server_timestamp_offset > ${late * 1000000} AND TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), TIMESTAMP_MILLIS(CAST(event_timestamp / 1000 as INT64)), SECOND) <= ${lookBackWindow * 2})`;
-	if (!intraDay) query += `.${TABLE_ID}\``;
+	if (!intraDay) query += `${TABLE_ID}\``;
 	return query;
 }
 
@@ -205,7 +206,7 @@ async function makeRequest(client, uri) {
 		});
 		return true;
 	} catch (error) {
-		console.error(`Error triggering function for ${uri}:`, error.message);
+		sLog(`Error triggering function for ${uri}:`, error, "ERROR");
 		return false;
 	}
 };
@@ -241,7 +242,7 @@ export async function LOAD(file) {
 		sLog(`LOAD ${parseGCSUri(file).file}: ${watch.end()}`, importJob, 'DEBUG');
 		return importJob;
 	} catch (error) {
-		console.error(`LOAD FAIL: ${watch.end()}`, { error: error.message });
+		sLog(`LOAD FAIL: ${watch.end()}`, error, "ERROR");
 		throw error;
 	}
 }
@@ -269,7 +270,7 @@ async function GCStoMixpanel(filePath) {
 		return result;
 
 	} catch (error) {
-		console.error('Error processing file:', file.name, error);
+		sLog('Error processing file:', {file: file.name, error: error}, 'ERROR');
 		throw error;
 	}
 }
