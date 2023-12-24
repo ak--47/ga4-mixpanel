@@ -1,0 +1,32 @@
+{
+	"name": "ga4-mixpanel",
+	"version": "1.0.0",
+	"description": "ETL data from Google Analytics 4 to Mixpanel (through bigquey and cloud storage)",
+	"main": "index.js",
+	"scripts": {
+		"start": "node index.js",
+		"run": "nodemon runner.mjs",
+		"deploy": "gcloud alpha functions deploy ga4-mixpanel --gen2 --runtime nodejs20 --region us-central1 --trigger-http --memory 4GB --cpu 1 --entry-point go --source . --timeout=3600 --no-allow-unauthenticated --max-instances=1000 --min-instances=0 --concurrency=5 --env-vars-file .env.yaml",
+		"test": "node --no-warnings --experimental-vm-modules node_modules/jest/bin/jest.js",
+		"func": "RUNTIME=dev functions-framework --target=go --source . --signature-type=http"
+	},
+	"keywords": [],
+	"author": "ak@mixpanel.com",
+	"license": "ISC",
+	"type": "module",
+	"dependencies": {
+		"@google-cloud/bigquery": "^7.3.0",
+		"@google-cloud/functions-framework": "^3.3.0",
+		"@google-cloud/storage": "^7.7.0",
+		"ak-tools": "^1.0.46",
+		"dayjs": "^1.11.10",
+		"dotenv": "^16.3.1",
+		"mixpanel-import": "^2.5.26",
+		"p-limit": "^5.0.0"
+	},
+	"devDependencies": {
+		"@jest/globals": "^29.7.0",
+		"jest": "^29.7.0",
+		"nock": "^13.4.0"
+	}
+}
