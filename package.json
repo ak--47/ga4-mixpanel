@@ -6,7 +6,7 @@
 	"scripts": {
 		"start": "node index.js",
 		"run": "nodemon runner.mjs",
-		"deploy": "gcloud alpha functions deploy ga4-mixpanel --gen2 --runtime nodejs20 --region us-central1 --trigger-http --memory 4GB --cpu 1 --entry-point go --source . --timeout=3600 --no-allow-unauthenticated --max-instances=536 --min-instances=0 --concurrency=5 --env-vars-file .env.yaml",
+		"deploy": "gcloud alpha functions deploy ga4-mixpanel --gen2 --runtime nodejs20 --region us-central1 --trigger-http --memory 2GB --cpu 1 --entry-point go --source . --timeout=3600 --no-allow-unauthenticated --max-instances=536 --min-instances=0 --concurrency=5 --env-vars-file .env.yaml",
 		"test": "node --no-warnings --experimental-vm-modules node_modules/jest/bin/jest.js",
 		"func": "RUNTIME=dev functions-framework --target=go --source . --signature-type=http"
 	},

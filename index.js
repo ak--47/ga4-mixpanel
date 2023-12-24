@@ -15,34 +15,36 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 
-const GCP_PROJECT = process.env.GCP_PROJECT;
-const BQ_DATASET_ID = process.env.BQ_DATASET_ID;
-const GCS_BUCKET = process.env.GCS_BUCKET;
-const MP_TOKEN = process.env.MP_TOKEN;
-const MP_SECRET = process.env.MP_SECRET;
-const MP_PROJECT = process.env.MP_PROJECT;
+const GCP_PROJECT = process.env.GCP_PROJECT || "";
+const BQ_DATASET_ID = process.env.BQ_DATASET_ID || "";
+const GCS_BUCKET = process.env.GCS_BUCKET || "";
+
+const MP_SECRET = process.env.MP_SECRET || "";
+const MP_PROJECT = process.env.MP_PROJECT || "";
 
 if (!GCP_PROJECT) throw new Error('GCP_PROJECT is required');
 if (!BQ_DATASET_ID) throw new Error('BQ_DATASET_ID is required');
 if (!GCS_BUCKET) throw new Error('GCS_BUCKET is required');
-if (!MP_TOKEN && !MP_SECRET) throw new Error('MP_TOKEN or MP_SECRET is required');
 
 // <-- TODO: make this dynamic ?!?!?
 const URL = process.env.URL || `https://ga4-mixpanel-lmozz6xkha-uc.a.run.app`;
 
-const dateLabelLong = dayjs.utc().format('YYYY-MM-DD-HH:mm');
+const dateLabelLong = dayjs.utc().format('MM-DD-HH-mm');
 const dateLabelShort = dayjs.utc().format('YYYYMMDD');
-const fileName = `${dateLabelLong}-tempFile-`;
+const filePrefix = `tempFile`;
+const fileName = `${filePrefix}-${dateLabelLong}-`;
 const bigquery = new BigQuery({ projectId: GCP_PROJECT });
 const storage = new Storage({ projectId: GCP_PROJECT });
 
 //MIGHT CHANGE
-let BQ_TABLE_ID = process.env.BQ_TABLE_ID;
-let CONCURRENCY = process.env.CONCURRENCY || 30;
+let MP_TOKEN = process.env.MP_TOKEN || "";
+let BQ_TABLE_ID = process.env.BQ_TABLE_ID || "";
+let CONCURRENCY = parseInt(process.env.CONCURRENCY || "30");
+let LATE = parseInt(process.env.LATE || "60");
+let LOOKBACK = parseInt(process.env.LOOKBACK || "3600");
 let INTRADAY = process.env.INTRADAY || true;
 let DATE = process.env.DATE || dateLabelShort;
-let LOOKBACK = process.env.LOOKBACK || 3600;
-let LATE = process.env.LATE || 60;
+
 
 
 
@@ -72,34 +74,47 @@ functions.http('go', async (req, res) => {
 		// GET REQUESTS EXTRACT DATA
 		if (req.method === 'GET') {
 
-			//if provided, use query params, otherwise use env vars		
-			BQ_TABLE_ID = req.query.table || BQ_TABLE_ID;
-			LOOKBACK = req.query.lookback ? Number(req.query.lookback) : LOOKBACK;
-			LATE = req.query.late ? Number(req.query.late) : LATE;
-			INTRADAY = !isNil(req.query.intraday) ? stringToBoolean(req.query.intraday) : INTRADAY;
-			DATE = req.query.date ? dayjs(req.query.date).format('YYYYMMDD') : DATE;
-			CONCURRENCY = req.query.concurrency ? Number(req.query.CONCURRENCY) : CONCURRENCY;
+			//note: query params OVER RIDE env vars
 
+			//strings
+			BQ_TABLE_ID = req.query.table?.toString() || BQ_TABLE_ID;
+			MP_TOKEN = req.query.token?.toString() || MP_TOKEN;
+			DATE = req.query.date ? dayjs(req.query.date.toString()).format('YYYYMMDD') : DATE;
+
+			//numbers
+			LOOKBACK = req.query.lookback ? parseInt(req.query.lookback.toString()) : LOOKBACK;
+			LATE = req.query.late ? parseInt(req.query.late.toString()) : LATE;
+			CONCURRENCY = req.query.concurrency ? parseInt(req.query.concurrency.toString()) : CONCURRENCY;
+
+			//switches
+			INTRADAY = !isNil(req.query.intraday) ? stringToBoolean(req.query.intraday) : INTRADAY;
+
+			if (!MP_TOKEN && !MP_SECRET) throw new Error('MP_TOKEN or MP_SECRET is required');
 			if (!BQ_TABLE_ID) BQ_TABLE_ID = `events_${DATE}`; //date = today if not specified
 			sLog('SYNC START', { BQ_TABLE_ID, LOOKBACK, LATE, INTRADAY, DATE, CONCURRENCY });
-			const extractResult = await EXTRACT();
-
+			const extractResult = await EXTRACT_JOB();
 			res.status(200).send(extractResult);
 			return;
 		}
 
 		// POST REQUESTS LOAD DATA
 		if (req.method === 'POST' && req.body && req.body.file) {
-			const loadResult = await LOAD(req.body.file);
+			const loadResult = await LOAD_JOB(req.body.file);
 			res.status(200).send(loadResult);
 			return;
 		}
 
-		res.status(400).send('Bad Request; expecting GET to extract or POST with file to load');
+		if (req.method === 'DELETE') {
+			const deleted = await deleteAllFilesFromBucket();
+			res.status(200).send({ deleted });
+			return;
+		}
+
+		res.status(400).send('Bad Request; expecting GET to extract or POST with file to load or DELETE to delete all files');
 		return;
 
 	} catch (err) {
-		sLog("Bad Path", req, "CRITICAL")
+		sLog("JOB FAIL", { path: req.path, method: req.method, params: req.params, body: req.body }, "CRITICAL");
 		res.status(500).send({ error: err.message }); // Send back a JSON error message
 	}
 });
@@ -111,33 +126,39 @@ EXTRACT
 ----
 */
 
-export async function EXTRACT() {
+export async function EXTRACT_JOB() {
 	const watch = timer('SYNC');
 	watch.start();
 	try {
 		const query = buildSQLQuery(BQ_TABLE_ID, INTRADAY, LOOKBACK, LATE);
 		sLog(`RUNNING QUERY:`, { query });
-		const uris = await exportQueryResultToGCS(BQ_TABLE_ID, query);
+		const uris = await exportQueryResultToGCS(BQ_TABLE_ID);
 		const tasks = await loadGCSToMixpanel(uris);
 
 		sLog(`SYNC COMPLETE: ${watch.end()}`, uris);
 		return { uris, ...tasks };
 
 	} catch (error) {
-		sLog(`SYNC FAIL: ${watch.end()}`, { error: error.message }, 'CRITICAL');
+		sLog(`SYNC FAIL: ${watch.end()}`, { message: error.message, stack: error.stack }, 'CRITICAL');
 		throw error;
 	}
 }
-
-function buildSQLQuery(TABLE_ID, intraDay = false, lookBackWindow = 3600, late = 60) {
+/**
+ * @param  {string} TABLE_ID
+ * @param  {string | boolean} [intraday=false]
+ * @param  {number} [lookBackWindow=3600]
+ * @param  {number} [late=60]
+ */
+function buildSQLQuery(TABLE_ID, intraday = false, lookBackWindow = 3600, late = 60) {
 	// i.e. intraday vs full day
 	// .events_intraday_*
 	// .events_*  or .events_20231222
+	if (typeof intraday !== 'boolean') intraday = stringToBoolean(intraday);
 	let query = `SELECT * FROM \`${GCP_PROJECT}.${BQ_DATASET_ID}.`;
-	if (intraDay) query += `events_intraday_*\``;
-	if (intraDay) query += `\nWHERE\nTIMESTAMP_DIFF(CURRENT_TIMESTAMP(), TIMESTAMP_MILLIS(CAST(event_timestamp / 1000 as INT64)), SECOND) <= ${lookBackWindow} `;
-	if (intraDay) query += `\nOR\n(event_server_timestamp_offset > ${late * 1000000} AND TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), TIMESTAMP_MILLIS(CAST(event_timestamp / 1000 as INT64)), SECOND) <= ${lookBackWindow * 2})`;
-	if (!intraDay) query += `${TABLE_ID}\``;
+	if (intraday) query += `events_intraday_*\``;
+	if (intraday) query += `\nWHERE\nTIMESTAMP_DIFF(CURRENT_TIMESTAMP(), TIMESTAMP_MILLIS(CAST(event_timestamp / 1000 as INT64)), SECOND) <= ${lookBackWindow} `;
+	if (intraday) query += `\nOR\n(event_server_timestamp_offset > ${late * 1000000} AND TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), TIMESTAMP_MILLIS(CAST(event_timestamp / 1000 as INT64)), SECOND) <= ${lookBackWindow * 2})`;
+	if (!intraday) query += `${TABLE_ID}\``;
 	return query;
 }
 
@@ -152,8 +173,16 @@ export async function exportQueryResultToGCS(BQ_TABLE_ID) {
 		writeDisposition: 'WRITE_TRUNCATE', // Overwrites the table if it already exists
 	};
 
-	const [job] = await bigquery.createQueryJob(jobConfig);
-	await pollJob(job);
+	let job;
+	try {
+		// @ts-ignore
+		[job] = await bigquery.createQueryJob(jobConfig);
+		await pollJob(job);
+	}
+	catch (error) {
+		sLog(`BIGQUERY FAIL: ${watch.end()}`, { message: error.message, stack: error.stack }, 'CRITICAL');
+		throw error;
+	}
 
 	const destinationTable = job.metadata.configuration.query.destinationTable;
 	const destination = storage.bucket(GCS_BUCKET).file(fileName.concat('*.jsonl'));
@@ -201,12 +230,26 @@ async function makeRequest(client, uri) {
 					[100, 199],
 					[400, 499],
 					[500, 599]
-				]
+				],
+				shouldRetry: error => {
+					if (error && error.code === "ECONNRESET") {
+						return Promise.resolve(true);
+					}
+					if (error.code === "500") {
+						return Promise.resolve(true);
+					}
+					const statusCode = error?.response?.status?.toString() || "";
+					if (statusCode.startsWith("5") || statusCode.startsWith("4")) {
+						return Promise.resolve(true);
+					}
+
+					return Promise.resolve(false);
+				}
 			}
 		});
 		return true;
 	} catch (error) {
-		sLog(`Error triggering function for ${uri}:`, error, "ERROR");
+		sLog(`Error triggering function for ${uri}:`, { message: error.message, stack: error.stack }, "ERROR");
 		return false;
 	}
 };
@@ -234,7 +277,7 @@ LOAD
 ----
 */
 
-export async function LOAD(file) {
+export async function LOAD_JOB(file) {
 	const watch = timer('LOAD');
 	watch.start();
 	try {
@@ -242,7 +285,7 @@ export async function LOAD(file) {
 		sLog(`LOAD ${parseGCSUri(file).file}: ${watch.end()}`, importJob, 'DEBUG');
 		return importJob;
 	} catch (error) {
-		sLog(`LOAD FAIL: ${watch.end()}`, error, "ERROR");
+		sLog(`LOAD FAIL: ${watch.end()}`, { message: error.message, stack: error.stack }, "ERROR");
 		throw error;
 	}
 }
@@ -251,7 +294,7 @@ export async function LOAD(file) {
 async function GCStoMixpanel(filePath) {
 	const { bucket, file, uri } = parseGCSUri(filePath);
 	const data = await storage.bucket(bucket).file(file);
-	const localFilePath = path.join(os.tmpdir(), file.name);
+	const localFilePath = path.join(os.tmpdir(), file);
 
 	try {
 		const watch = timer('file');
@@ -266,14 +309,42 @@ async function GCStoMixpanel(filePath) {
 		fs.unlinkSync(localFilePath);
 
 		// Delete the file from GCS
-		await file.delete();
+		await data.delete();
 		return result;
 
 	} catch (error) {
-		sLog('Error processing file:', {file: file.name, error: error}, 'ERROR');
+		sLog('Error processing file:', { file, message: error.message, stack: error.stack }, 'ERROR');
 		throw error;
 	}
 }
+
+async function deleteAllFilesFromBucket() {
+	const watch = timer('delete');
+	watch.start();
+	let deleted = 0;
+	const [files] = await storage.bucket(GCS_BUCKET).getFiles({ prefix: filePrefix });
+
+	// Define the concurrency limit, e.g., 5 tasks at a time
+	const limit = pLimit(CONCURRENCY);
+
+	// Create an array of promises, each limited by pLimit
+	const deletePromises = files.map(file =>
+		limit(async () => {
+			await file.delete();
+			return 1; // Return 1 for each successful deletion
+		})
+	);
+
+	// Use Promise.allSettled to wait for all the delete operations to complete
+	const results = await Promise.allSettled(deletePromises);
+
+	// Count successful deletions
+	deleted = results.reduce((acc, result) => acc + (result.status === 'fulfilled' ? result.value : 0), 0);
+
+	sLog(`STORAGE DELETE: ${watch.end()}`);
+	return deleted;
+}
+
 
 
 
