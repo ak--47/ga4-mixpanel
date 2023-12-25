@@ -1,0 +1,27 @@
+# Local development
+.vscode/
+*.log
+*.log.*
+
+# Test directories
+tests/
+
+# Version control
+.git
+.gitignore
+.gcloudignore
+
+# Dependency directories
+node_modules/
+
+# Environment files that contain sensitive data
+.env
+.env.yaml
+
+# Docker
+.dockerignore
+Dockerfile
+
+# Others
+*.md
+*.yml

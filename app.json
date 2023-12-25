@@ -1,0 +1,51 @@
+{
+	"name": "ga4-mixpanel",
+	"options": {
+		"allow-unauthenticated": false,
+		"memory": "2G",
+		"cpu": "1",
+		"port": 8080,
+		"concurrency": 5
+	},
+	"env": {
+		"GCP_PROJECT": {
+			"description": "your GCP project ID",
+			"value": "my_gcp_project",
+			"required": true
+		},
+		"BQ_DATASET_ID": {
+			"description": "the BigQuery dataset ID for your GA tables",
+			"value": "analytics_123456789",
+			"required": true
+		},
+		"GCS_BUCKET": {
+			"description": "the GCS bucket which we will use to extract the GA data",
+			"value": "my-bucket",
+			"required": true
+		},
+		"MP_TOKEN": {
+			"description": "your mixpane project token",
+			"value": "1234567890abcdef1234567890abcdef",
+			"required": true
+		},
+		"URL": {
+			"description": "the public URL of your cloud function",
+			"value": "",
+			"required": true
+		}		
+	},
+	"hooks": {
+		"prebuild": {
+			"commands": []
+		},
+		"postbuild": {
+			"commands": []
+		},
+		"precreate": {
+			"commands": []
+		},
+		"postcreate": {
+			"commands": []
+		}
+	}
+}
