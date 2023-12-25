@@ -15,14 +15,11 @@ import dotenv from "dotenv";
 dotenv.config();
 
 const GCP_PROJECT = process.env.GCP_PROJECT || "";
-const BQ_DATASET_ID = process.env.BQ_DATASET_ID || "";
 const GCS_BUCKET = process.env.GCS_BUCKET || "";
-
 const MP_SECRET = process.env.MP_SECRET || "";
 const MP_PROJECT = process.env.MP_PROJECT || "";
 
 if (!GCP_PROJECT) throw new Error("GCP_PROJECT is required");
-if (!BQ_DATASET_ID) throw new Error("BQ_DATASET_ID is required");
 if (!GCS_BUCKET) throw new Error("GCS_BUCKET is required");
 
 // <-- TODO: make this dynamic ?!?!?
@@ -37,6 +34,7 @@ const storage = new Storage({ projectId: GCP_PROJECT });
 
 //MIGHT CHANGE
 let MP_TOKEN = process.env.MP_TOKEN || "";
+let BQ_DATASET_ID = process.env.BQ_DATASET_ID || "";
 let BQ_TABLE_ID = process.env.BQ_TABLE_ID || "";
 let CONCURRENCY = parseInt(process.env.CONCURRENCY || "30");
 let LATE = parseInt(process.env.LATE || "60");
@@ -68,11 +66,13 @@ const opts = {
 functions.http("go", async (req, res) => {
 	try {
 		// GET REQUESTS EXTRACT DATA
-		if (req.method === "GET" || (req.method === "POST" && req.body && req.body.sql)) {
-			//note: query params OVER RIDE env vars
+		if (req.method === "GET" || (req.method === "PATCH" && req.body && req.body.sql)) {
+			
+			//note: query params OVERRIDE env vars
 
 			//strings
 			BQ_TABLE_ID = req.query.table?.toString() || BQ_TABLE_ID;
+			BQ_DATASET_ID = req.query.dataset?.toString() || BQ_DATASET_ID;
 			MP_TOKEN = req.query.token?.toString() || MP_TOKEN;
 			DATE = req.query.date ? dayjs(req.query.date.toString()).format("YYYYMMDD") : DATE;
 			SELECT_STATEMENT = req.body.sql ? req.body.sql.toString() : SELECT_STATEMENT;
@@ -206,6 +206,32 @@ async function pollJob(job) {
 		throw new Error(`Job failed with error ${jobMetadata.status.errorResult.message}`);
 	}
 }
+
+/**
+ * @typedef {import('mixpanel-import').ImportResults} ImportResults
+ */
+
+async function loadGCSToMixpanel(uris) {
+	const auth = new GoogleAuth();
+	const client = await auth.getIdTokenClient(URL);
+	const limit = pLimit(CONCURRENCY);
+	const requestPromises = uris.map((uri) => {
+		return limit(() => makeRequest(client, uri));
+	});
+	const complete = await Promise.allSettled(requestPromises);
+	const results = {
+		success: complete.filter((p) => p.status === "fulfilled").length,
+		failed: complete.filter((p) => p.status === "rejected").length,
+	};
+
+	// @ts-ignore
+	const receipts = complete.filter((p) => p.status === "fulfilled").map(p => p.value);
+	results.summary = summarizeImportResults(receipts);
+	results.total = results.success + results.failed;
+	results.successRate = results.success / results.total;
+	return results;
+}
+
 /**
  * @param  {import('google-auth-library').IdTokenClient} client
  * @param  {string} uri
@@ -251,29 +277,105 @@ async function makeRequest(client, uri) {
 	}
 }
 
-/**
- * @typedef {import('mixpanel-import').ImportResults} ImportResults
- */
 
-async function loadGCSToMixpanel(uris) {
-	const auth = new GoogleAuth();
-	const client = await auth.getIdTokenClient(URL);
+
+/*
+----
+LOAD
+----
+*/
+
+export async function LOAD_JOB(file) {
+	const watch = timer("LOAD");
+	watch.start();
+	try {
+		const importJob = await GCStoMixpanel(file);
+		sLog(`LOAD ${parseGCSUri(file).file}: ${watch.end()}`, importJob, "DEBUG");
+		return importJob;
+	} catch (error) {
+		sLog(`LOAD FAIL: ${watch.end()}`, { message: error.message, stack: error.stack }, "ERROR");
+		throw error;
+	}
+}
+
+async function GCStoMixpanel(filePath) {
+	const { bucket, file, uri } = parseGCSUri(filePath);
+	const data = await storage.bucket(bucket).file(file);
+	// const localFilePath = path.join(os.tmpdir(), file);
+
+	try {
+		const watch = timer("file");
+		watch.start();
+		// Download file to a temporary location
+		// await data.download({ destination: localFilePath, validation: false });
+
+		// Pass the file to Mixpanel
+		const result = await Mixpanel(creds, data.createReadStream({ decompress: true }), opts);
+
+		// Delete the file from temporary storage
+		// fs.unlinkSync(localFilePath);
+
+		// Delete the file from GCS
+		await data.delete();
+		return result;
+	} catch (error) {
+		sLog("Error processing file:", { file, message: error.message, stack: error.stack }, "ERROR");
+		throw error;
+	}
+}
+
+async function deleteAllFilesFromBucket() {
+	const watch = timer("delete");
+	watch.start();
+	let deleted = 0;
+	const [files] = await storage.bucket(GCS_BUCKET).getFiles({ prefix: filePrefix });
+
+	// Define the concurrency limit, e.g., 5 tasks at a time
 	const limit = pLimit(CONCURRENCY);
-	const requestPromises = uris.map((uri) => {
-		return limit(() => makeRequest(client, uri));
-	});
-	const complete = await Promise.allSettled(requestPromises);
-	const results = {
-		success: complete.filter((p) => p.status === "fulfilled").length,
-		failed: complete.filter((p) => p.status === "rejected").length,
-	};
 
-	// @ts-ignore
-	const receipts = complete.filter((p) => p.status === "fulfilled").map(p => p.value);
-	results.summary = summarizeImportResults(receipts);
-	results.total = results.success + results.failed;
-	results.successRate = results.success / results.total;
-	return results;
+	// Create an array of promises, each limited by pLimit
+	const deletePromises = files.map((file) =>
+		limit(async () => {
+			await file.delete();
+			return 1; // Return 1 for each successful deletion
+		})
+	);
+
+	// Use Promise.allSettled to wait for all the delete operations to complete
+	const results = await Promise.allSettled(deletePromises);
+
+	// Count successful deletions
+	deleted = results.reduce((acc, result) => acc + (result.status === "fulfilled" ? result.value : 0), 0);
+
+	sLog(`STORAGE DELETE: ${watch.end()}`);
+	return deleted;
+}
+
+/*
+----
+HELPERS
+----
+*/
+
+
+function stringToBoolean(string) {
+	if (typeof string !== "string") {
+		return Boolean(string);
+	}
+
+	switch (string.toLowerCase().trim()) {
+		case "true":
+		case "yes":
+		case "1":
+			return true;
+		case "false":
+		case "no":
+		case "0":
+		case "":
+			return false;
+		default:
+			return Boolean(string);
+	}
 }
 
 /**
@@ -325,96 +427,4 @@ function summarizeImportResults(results) {
 	// ... average other properties as needed
 
 	return summary;
-}
-
-/*
-----
-LOAD
-----
-*/
-
-export async function LOAD_JOB(file) {
-	const watch = timer("LOAD");
-	watch.start();
-	try {
-		const importJob = await GCStoMixpanel(file);
-		sLog(`LOAD ${parseGCSUri(file).file}: ${watch.end()}`, importJob, "DEBUG");
-		return importJob;
-	} catch (error) {
-		sLog(`LOAD FAIL: ${watch.end()}`, { message: error.message, stack: error.stack }, "ERROR");
-		throw error;
-	}
-}
-
-async function GCStoMixpanel(filePath) {
-	const { bucket, file, uri } = parseGCSUri(filePath);
-	const data = await storage.bucket(bucket).file(file);
-	const localFilePath = path.join(os.tmpdir(), file);
-
-	try {
-		const watch = timer("file");
-		watch.start();
-		// Download file to a temporary location
-		// await data.download({ destination: localFilePath, validation: false });
-
-		// Pass the file to Mixpanel
-		const result = await Mixpanel(creds, data.createReadStream({ decompress: true }), opts);
-
-		// Delete the file from temporary storage
-		// fs.unlinkSync(localFilePath);
-
-		// Delete the file from GCS
-		await data.delete();
-		return result;
-	} catch (error) {
-		sLog("Error processing file:", { file, message: error.message, stack: error.stack }, "ERROR");
-		throw error;
-	}
-}
-
-async function deleteAllFilesFromBucket() {
-	const watch = timer("delete");
-	watch.start();
-	let deleted = 0;
-	const [files] = await storage.bucket(GCS_BUCKET).getFiles({ prefix: filePrefix });
-
-	// Define the concurrency limit, e.g., 5 tasks at a time
-	const limit = pLimit(CONCURRENCY);
-
-	// Create an array of promises, each limited by pLimit
-	const deletePromises = files.map((file) =>
-		limit(async () => {
-			await file.delete();
-			return 1; // Return 1 for each successful deletion
-		})
-	);
-
-	// Use Promise.allSettled to wait for all the delete operations to complete
-	const results = await Promise.allSettled(deletePromises);
-
-	// Count successful deletions
-	deleted = results.reduce((acc, result) => acc + (result.status === "fulfilled" ? result.value : 0), 0);
-
-	sLog(`STORAGE DELETE: ${watch.end()}`);
-	return deleted;
-}
-
-function stringToBoolean(string) {
-	if (typeof string !== "string") {
-		return Boolean(string);
-	}
-
-	switch (string.toLowerCase().trim()) {
-		case "true":
-		case "yes":
-		case "1":
-			return true;
-		case "false":
-		case "no":
-		case "0":
-		case "":
-			return false;
-		default:
-			return Boolean(string);
-	}
 }
