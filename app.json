@@ -10,22 +10,22 @@
 	"env": {
 		"GCP_PROJECT": {
 			"description": "your GCP project ID",
-			"value": "my_gcp_project",
+			"value": "",
 			"required": true
 		},
 		"BQ_DATASET_ID": {
 			"description": "the BigQuery dataset ID for your GA tables",
-			"value": "analytics_123456789",
+			"value": "",
 			"required": true
 		},
 		"GCS_BUCKET": {
 			"description": "the GCS bucket which we will use to extract the GA data",
-			"value": "my-bucket",
+			"value": "",
 			"required": true
 		},
 		"MP_TOKEN": {
 			"description": "your mixpane project token",
-			"value": "1234567890abcdef1234567890abcdef",
+			"value": "",
 			"required": true
 		},
 		"URL": {
