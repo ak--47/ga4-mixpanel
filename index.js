@@ -31,8 +31,8 @@ dotenv.config();
 // TODAY STUFF
 const timeFileLabel = dayjs.utc().format("DD-HH:mm");
 
-const filePrefix = `tempFile`;
-const fileName = `${filePrefix}-${timeFileLabel}-`;
+let filePrefix = `temp`;
+let fileName = `${filePrefix}-${timeFileLabel}-`;
 
 import JSON_CONFIG from "./CONFIG.json" assert { type: "json" };
 let {
@@ -52,6 +52,7 @@ let {
 	DAYS_AGO = 2,
 	TYPE = "event",
 } = JSON_CONFIG;
+
 
 
 // GCP
@@ -147,6 +148,8 @@ functions.http("go", async (req, res) => {
 			LOOKBACK = req.query.lookback ? parseInt(req.query.lookback.toString()) : LOOKBACK;
 			LATE = req.query.late ? parseInt(req.query.late.toString()) : LATE;
 			CONCURRENCY = req.query.concurrency ? parseInt(req.query.concurrency.toString()) : CONCURRENCY;
+			DAYS_AGO = req.query.days_ago ? parseInt(req.query.days_ago.toString()) : DAYS_AGO;
+			if (req.query.days_ago) DATE = dayjs.utc().subtract(DAYS_AGO, "d").format("YYYYMMDD");
 
 			//switches
 			INTRADAY = !isNil(req.query.intraday) ? stringToBoolean(req.query.intraday) : INTRADAY;
@@ -156,11 +159,13 @@ functions.http("go", async (req, res) => {
 
 			//having a 'DATE' and 'INTRADAY' is not supported
 			if (INTRADAY) DATE = "";
+			if (INTRADAY) fileName = `intraday-`.concat(fileName);
+			if (!INTRADAY) fileName = `${DATE}-`.concat(fileName);
 
 			const watch = timer("SYNC");
 			watch.start();
-			
-			sLog("SYNC START!", {
+
+			sLog(`${INTRADAY ? "INTRADAY": DATE} SYNC START!`, {
 				GCS_BUCKET,
 				BQ_DATASET_ID,
 				BQ_TABLE_ID,
@@ -175,10 +180,10 @@ functions.http("go", async (req, res) => {
 				INTRADAY,
 				VERBOSE
 			}, "NOTICE");
-			
+
 			const importTasks = await EXTRACT_JOB(INTRADAY);
-			
-			sLog(`SYNC COMPLETE: ${watch.end()}`, importTasks, "NOTICE");
+
+			sLog(`${INTRADAY ? "INTRADAY": DATE} SYNC COMPLETE: ${watch.end()}`, importTasks, "NOTICE");
 
 			res.status(200).send(importTasks);
 			return;
@@ -325,8 +330,8 @@ async function loadGCSToMixpanel(uris) {
 	});
 	const complete = await Promise.allSettled(requestPromises);
 	const results = {
-		success: complete.filter((p) => p.status === "fulfilled").length,
-		failed: complete.filter((p) => p.status === "rejected").length,
+		files_success: complete.filter((p) => p.status === "fulfilled").length,
+		files_failed: complete.filter((p) => p.status === "rejected").length,
 	};
 
 	// @ts-ignore
@@ -377,7 +382,7 @@ async function makeRequest(client, uri) {
 		const { data } = req;
 		return data;
 	} catch (error) {
-		sLog(`Error triggering function for ${uri}:`, { message: error.message, stack: error.stack }, "ERROR");
+		sLog(`request error for ${uri}:`, { message: error.message, stack: error.stack, code: error.code }, "ERROR");
 		return {};
 	}
 }
@@ -396,7 +401,7 @@ export async function LOAD_JOB(file) {
 		if (VERBOSE) sLog(`LOAD ${parseGCSUri(file).file}: ${watch.end()}`, importJob, "DEBUG");
 		return importJob;
 	} catch (error) {
-		sLog(`LOAD FAIL: ${watch.end()}`, { message: error.message, stack: error.stack }, "ERROR");
+		sLog(`task failed for ${file}: ${watch.end()}`, { message: error.message, stack: error.stack }, "ERROR");
 		throw error;
 	}
 }
@@ -422,7 +427,7 @@ async function GCStoMixpanel(filePath) {
 		await data.delete();
 		return result;
 	} catch (error) {
-		sLog("Error processing file:", { file, message: error.message, stack: error.stack }, "ERROR");
+		sLog(`error loading file: ${filePath}`, { file, message: error.message, stack: error.stack }, "ERROR");
 		throw error;
 	}
 }
