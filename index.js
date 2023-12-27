@@ -155,8 +155,7 @@ functions.http("go", async (req, res) => {
 			if (!BQ_TABLE_ID) BQ_TABLE_ID = `events_${DATE}`; //date = today if not specified
 
 			//having a 'DATE' and 'INTRADAY' is not supported
-			if (DATE) INTRADAY = false;
-			if (!DATE) INTRADAY = true;
+			if (INTRADAY) DATE = "";
 
 			const watch = timer("SYNC");
 			watch.start();
