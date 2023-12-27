@@ -120,12 +120,14 @@ const opts = {
 	flattenData: true,
 };
 
+
 // ENTRY POINT
 functions.http("go", async (req, res) => {
 	try {
 		// INSTANCE METADATA
 		if (req.method === "OPTIONS") {
 			const metadata = await recon();
+			sLog("METADATA", metadata, "NOTICE");
 			res.status(200).send(metadata);
 			return;
 		}
@@ -156,9 +158,30 @@ functions.http("go", async (req, res) => {
 			if (DATE) INTRADAY = false;
 			if (!DATE) INTRADAY = true;
 
-			sLog("SYNC START", { BQ_TABLE_ID, LOOKBACK, LATE, INTRADAY, DATE, CONCURRENCY }, "INFO");
-			const extractResult = await EXTRACT_JOB(INTRADAY);
-			res.status(200).send(extractResult);
+			const watch = timer("SYNC");
+			watch.start();
+			
+			sLog("SYNC START!", {
+				GCS_BUCKET,
+				BQ_DATASET_ID,
+				BQ_TABLE_ID,
+				URL,
+				SQL,
+				TYPE,
+				CONCURRENCY,
+				LATE,
+				LOOKBACK,
+				DAYS_AGO,
+				DATE,
+				INTRADAY,
+				VERBOSE
+			}, "NOTICE");
+			
+			const importTasks = await EXTRACT_JOB(INTRADAY);
+			
+			sLog(`SYNC COMPLETE: ${watch.end()}`, importTasks, "NOTICE");
+
+			res.status(200).send(importTasks);
 			return;
 		}
 
@@ -200,7 +223,7 @@ export async function EXTRACT_JOB(INTRADAY = true) {
 		if (VERBOSE) sLog(`RUNNING ${INTRADAY ? "INTRADAY" : "WHOLE TABLE"} QUERY`, { QUERY }, "DEBUG");
 		const GCS_URIs = await exportQueryResultToGCS(QUERY);
 		const importTasks = await loadGCSToMixpanel(GCS_URIs);
-		sLog(`SYNC COMPLETE: ${watch.end()}`, importTasks, "INFO");
+		watch.end();
 		return importTasks;
 	} catch (error) {
 		sLog(`SYNC FAIL: ${watch.end()}`, { message: error.message, stack: error.stack }, "CRITICAL");
