@@ -1,0 +1,17 @@
+{
+    "BQ_DATASET_ID": "",
+    "BQ_TABLE_ID": "",
+    "GCS_BUCKET": "",
+    "MP_TOKEN": "",
+    "MP_SECRET": "",
+    "MP_PROJECT": "",
+    "URL": "",    
+    "SQL": "",
+	"CONCURRENCY": 30,
+    "LATE": 60,
+    "LOOKBACK": 3600,
+    "INTRADAY": true,
+	"VERBOSE": false,
+	"DAYS_AGO": 2,
+	"TYPE": "event"
+}

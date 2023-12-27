@@ -7,31 +7,25 @@
 		"port": 8080,
 		"concurrency": 5
 	},
-	"env": {
-		"GCP_PROJECT": {
-			"description": "your GCP project ID",
-			"value": "",
-			"required": true
-		},
+	"env": {		
 		"BQ_DATASET_ID": {
-			"description": "the BigQuery dataset ID for your GA tables",
+			"description": "BigQuery dataset ID (i.e. analytics_12345)",
 			"value": "",
-			"required": true
+			"required": true,
+			"order": 2
+			
 		},
 		"GCS_BUCKET": {
-			"description": "the GCS bucket which we will use to extract the GA data",
+			"description": "a GCS bucket name; used to extract the GA data (i.e. mixpanel_stg)",
 			"value": "",
-			"required": true
+			"required": true,
+			"order": 3
 		},
 		"MP_TOKEN": {
-			"description": "your mixpane project token",
+			"description": "your mixpanel project token",
 			"value": "",
-			"required": true
-		},
-		"URL": {
-			"description": "the public URL of your cloud function",
-			"value": "",
-			"required": true
+			"required": true,
+			"order": 4
 		}		
 	},
 	"hooks": {

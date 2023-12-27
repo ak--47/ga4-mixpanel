@@ -1,58 +1,115 @@
+/***
+ * GA4 to Mixpanel
+ * purpose: sync GA4 events to Mixpanel; support intraday tables and backfilling
+ * todo: group analytics
+ * todo: one click deploys
+ * by ak@mixpanel.com
+ *
+ *
+ */
+
 import functions from "@google-cloud/functions-framework";
 import { BigQuery } from "@google-cloud/bigquery";
 import { Storage } from "@google-cloud/storage";
 import { GoogleAuth } from "google-auth-library";
 import Mixpanel from "mixpanel-import";
 import pLimit from "p-limit";
-import path from "path";
-import os from "os";
-import fs from "fs";
+import recon from "./recon.js";
 import { parseGCSUri, sLog, timer, isNil } from "ak-tools";
+
 import dayjs from "dayjs";
 import utc from "dayjs/plugin/utc.js";
 dayjs.extend(utc);
 import dotenv from "dotenv";
 dotenv.config();
 
-const GCP_PROJECT = process.env.GCP_PROJECT || "";
-const GCS_BUCKET = process.env.GCS_BUCKET || "";
-const MP_SECRET = process.env.MP_SECRET || "";
-const MP_PROJECT = process.env.MP_PROJECT || "";
+// these were used when NOT streaming E2E
+// import path from "path";
+// import os from "os";
+// import fs from "fs";
 
-if (!GCP_PROJECT) throw new Error("GCP_PROJECT is required");
-if (!GCS_BUCKET) throw new Error("GCS_BUCKET is required");
+// TODAY STUFF
+const timeFileLabel = dayjs.utc().format("DD-HH:mm");
 
-// <-- TODO: make this dynamic ?!?!?
-const URL = process.env.URL || `https://ga4-mixpanel-lmozz6xkha-uc.a.run.app`;
-
-const dateLabelLong = dayjs.utc().format("DD-HH:mm");
-const dateLabelShort = dayjs.utc().format("YYYYMMDD");
 const filePrefix = `tempFile`;
-const fileName = `${filePrefix}-${dateLabelLong}-`;
-const bigquery = new BigQuery({ projectId: GCP_PROJECT });
-const storage = new Storage({ projectId: GCP_PROJECT });
+const fileName = `${filePrefix}-${timeFileLabel}-`;
 
-//MIGHT CHANGE
-let MP_TOKEN = process.env.MP_TOKEN || "";
-let BQ_DATASET_ID = process.env.BQ_DATASET_ID || "";
-let BQ_TABLE_ID = process.env.BQ_TABLE_ID || "";
-let CONCURRENCY = parseInt(process.env.CONCURRENCY || "30");
-let LATE = parseInt(process.env.LATE || "60");
-let LOOKBACK = parseInt(process.env.LOOKBACK || "3600");
-let INTRADAY = true;
-let DATE = process.env.DATE || dateLabelShort;
-let SELECT_STATEMENT = `SELECT *`;
+import JSON_CONFIG from "./CONFIG.json" assert { type: "json" };
+let {
+	BQ_DATASET_ID = "",
+	BQ_TABLE_ID = "",
+	GCS_BUCKET = "",
+	MP_TOKEN = "",
+	MP_SECRET = "",
+	MP_PROJECT = "",
+	URL = ``,
+	SQL = "SELECT *",
+	CONCURRENCY = 30, // how many requests to make at once
+	LATE = 60, // how many seconds late is a late event (INTRADAY ONLY)
+	LOOKBACK = 3600, // how many seconds to look back (INTRADAY ONLY)
+	INTRADAY = true,
+	VERBOSE = false,
+	DAYS_AGO = 2,
+	TYPE = "event",
+} = JSON_CONFIG;
 
+
+// GCP
+if (process.env.GCS_BUCKET) GCS_BUCKET = process.env.GCS_BUCKET;
+if (process.env.BQ_DATASET_ID) BQ_DATASET_ID = process.env.BQ_DATASET_ID;
+if (process.env.BQ_TABLE_ID) BQ_TABLE_ID = process.env.BQ_TABLE_ID;
+if (process.env.URL) URL = process.env.URL;
+if (process.env.SQL) SQL = process.env.SQL;
+
+// MIXPANEL 
+if (process.env.MP_SECRET) MP_SECRET = process.env.MP_SECRET;
+if (process.env.MP_PROJECT) MP_PROJECT = process.env.MP_PROJECT;
+if (process.env.MP_TOKEN) MP_TOKEN = process.env.MP_TOKEN;
+if (process.env.TYPE) TYPE = process.env.TYPE;
+
+
+// INTRADAY
+if (process.env.CONCURRENCY) CONCURRENCY = parseInt(process.env.CONCURRENCY);
+if (process.env.LATE) LATE = parseInt(process.env.LATE);
+if (process.env.LOOKBACK) LOOKBACK = parseInt(process.env.LOOKBACK);
+if (process.env.DAYS_AGO) DAYS_AGO = parseInt(process.env.DAYS_AGO);
+let DATE = dayjs.utc().subtract(DAYS_AGO, "d").format("YYYYMMDD");
+if (process.env.DATE) DATE = dayjs(process.env.DATE.toString()).format("YYYYMMDD");
+
+
+if (process.env.INTRADAY) INTRADAY = stringToBoolean(process.env.INTRADAY);
+if (process.env.VERBOSE) VERBOSE = stringToBoolean(process.env.VERBOSE);
+
+if (!SQL) SQL = "SELECT *";
+if (!URL) sLog('URL MUST BE SET IN CONFIG.JSON OR AS ENV VAR', {}, "CRITICAL");
+
+if (!GCS_BUCKET) sLog('GCS_BUCKET MUST BE SET IN CONFIG.JSON OR AS ENV VAR', {}, "CRITICAL");
+// <-- TODO: make this dynamic ?!?!?
+
+// GCP RESOURCES
+const bigquery = new BigQuery();
+const storage = new Storage();
+
+
+
+// CREDENTIALS
 /** @type {import('mixpanel-import').Creds} */
 const creds = {};
 if (MP_TOKEN) creds.token = MP_TOKEN;
 if (MP_SECRET) creds.secret = MP_SECRET;
 if (MP_PROJECT) creds.project = MP_PROJECT;
 
+if (!["event", "user", "group"].includes(TYPE)) throw new Error(`TYPE must be one of: ${["event", "user", "group"]}`);
+
+/** @type {import('mixpanel-import').RecordType} */
+// @ts-ignore
+const recordType = TYPE;
+
+// MIXPANEL IMPORT OPTIONS
 /** @type {import('mixpanel-import').Options} */
 const opts = {
 	vendor: "ga4",
-	recordType: "event",
+	recordType,
 	abridged: true,
 	streamFormat: "jsonl",
 	strict: false,
@@ -63,11 +120,18 @@ const opts = {
 	flattenData: true,
 };
 
+// ENTRY POINT
 functions.http("go", async (req, res) => {
 	try {
-		// GET REQUESTS EXTRACT DATA
+		// INSTANCE METADATA
+		if (req.method === "OPTIONS") {
+			const metadata = await recon();
+			res.status(200).send(metadata);
+			return;
+		}
+
+		// EXTRACT DATA
 		if (req.method === "GET" || (req.method === "PATCH" && req.body && req.body.sql)) {
-			
 			//note: query params OVERRIDE env vars
 
 			//strings
@@ -75,7 +139,7 @@ functions.http("go", async (req, res) => {
 			BQ_DATASET_ID = req.query.dataset?.toString() || BQ_DATASET_ID;
 			MP_TOKEN = req.query.token?.toString() || MP_TOKEN;
 			DATE = req.query.date ? dayjs(req.query.date.toString()).format("YYYYMMDD") : DATE;
-			SELECT_STATEMENT = req.body.sql ? req.body.sql.toString() : SELECT_STATEMENT;
+			SQL = req.body.sql ? req.body.sql.toString() : SQL;
 
 			//numbers
 			LOOKBACK = req.query.lookback ? parseInt(req.query.lookback.toString()) : LOOKBACK;
@@ -87,26 +151,32 @@ functions.http("go", async (req, res) => {
 
 			if (!MP_TOKEN && !MP_SECRET) throw new Error("MP_TOKEN or MP_SECRET is required");
 			if (!BQ_TABLE_ID) BQ_TABLE_ID = `events_${DATE}`; //date = today if not specified
-			if (DATE !== dateLabelShort && INTRADAY) INTRADAY = false; //if date is not today, then we can't use intraday
-			sLog("SYNC START", { BQ_TABLE_ID, LOOKBACK, LATE, INTRADAY, DATE, CONCURRENCY });
-			const extractResult = await EXTRACT_JOB();
+
+			//having a 'DATE' and 'INTRADAY' is not supported
+			if (DATE) INTRADAY = false;
+			if (!DATE) INTRADAY = true;
+
+			sLog("SYNC START", { BQ_TABLE_ID, LOOKBACK, LATE, INTRADAY, DATE, CONCURRENCY }, "INFO");
+			const extractResult = await EXTRACT_JOB(INTRADAY);
 			res.status(200).send(extractResult);
 			return;
 		}
 
-		// POST REQUESTS LOAD DATA
+		// LOAD DATA
 		if (req.method === "POST" && req.body && req.body.file) {
 			const loadResult = await LOAD_JOB(req.body.file);
 			res.status(200).send(loadResult);
 			return;
 		}
 
+		// DELETE DATA
 		if (req.method === "DELETE") {
 			const deleted = await deleteAllFilesFromBucket();
 			res.status(200).send({ deleted });
 			return;
 		}
 
+		// FAIL
 		res.status(400).send("Bad Request; expecting GET to extract or POST with file to load or DELETE to delete all files");
 		return;
 	} catch (err) {
@@ -121,16 +191,17 @@ EXTRACT
 ----
 */
 
-export async function EXTRACT_JOB() {
+
+export async function EXTRACT_JOB(INTRADAY = true) {
 	const watch = timer("SYNC");
 	watch.start();
 	try {
-		const query = await buildSQLQuery(BQ_TABLE_ID, INTRADAY, LOOKBACK, LATE);
-		sLog(`RUNNING QUERY:`, { query });
-		const uris = await exportQueryResultToGCS(query);
-		const tasks = await loadGCSToMixpanel(uris);
-		sLog(`SYNC COMPLETE: ${watch.end()}`, tasks);
-		return tasks;
+		const QUERY = await buildSQLQuery(BQ_DATASET_ID, BQ_TABLE_ID, INTRADAY, LOOKBACK, LATE, TYPE, SQL);
+		if (VERBOSE) sLog(`RUNNING ${INTRADAY ? "INTRADAY" : "WHOLE TABLE"} QUERY`, { QUERY }, "DEBUG");
+		const GCS_URIs = await exportQueryResultToGCS(QUERY);
+		const importTasks = await loadGCSToMixpanel(GCS_URIs);
+		sLog(`SYNC COMPLETE: ${watch.end()}`, importTasks, "INFO");
+		return importTasks;
 	} catch (error) {
 		sLog(`SYNC FAIL: ${watch.end()}`, { message: error.message, stack: error.stack }, "CRITICAL");
 		throw error;
@@ -141,18 +212,26 @@ export async function EXTRACT_JOB() {
  * @param  {string | boolean} [intraday=false]
  * @param  {number} [lookBackWindow=3600]
  * @param  {number} [late=60]
+ * @param  {string} [type="event"]
  */
-async function buildSQLQuery(TABLE_ID, intraday = false, lookBackWindow = 3600, late = 60) {
+async function buildSQLQuery(BQ_DATASET_ID, TABLE_ID, intraday = false, lookBackWindow = 3600, late = 60, type = "event", SQL = "SELECT *") {
 	// i.e. intraday vs full day
 	// .events_intraday_*
 	// .events_*  or .events_20231222
-	let query = `${SELECT_STATEMENT} FROM \`${GCP_PROJECT}.${BQ_DATASET_ID}.`;
+	let query = `${SQL} FROM \`${BQ_DATASET_ID}.`;
 	if (intraday) query += `events_intraday_*\``;
 	if (!intraday) query += `${TABLE_ID}\``;
+	if (intraday || type === "user") query += `\nWHERE\n`;
 
-	// INTRADAY WHERE CLAUSE
-	if (intraday) query += `\nWHERE\n(TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), TIMESTAMP_MILLIS(CAST(event_timestamp / 1000 as INT64)), SECOND) <= ${lookBackWindow})`;
-	if (intraday) query += `\nOR\n(event_server_timestamp_offset > ${late * 1000000} AND TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), TIMESTAMP_MILLIS(CAST(event_timestamp / 1000 as INT64)), SECOND) <= ${lookBackWindow * 2})`;
+	if (type === "user") query += `(user_properties IS NOT NULL)`;
+	if (intraday && type === "user") query += `\nAND\n`;
+
+	// events in the last lookBackWindow (seconds)
+	if (intraday) query += `((TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), TIMESTAMP_MILLIS(CAST(event_timestamp / 1000 as INT64)), SECOND) <= ${lookBackWindow + 60})`;
+	if (intraday) query += `\nOR\n`;
+	// events that are late (seconds)
+	if (intraday) query += `(event_server_timestamp_offset > ${(late + 30) * 1000000} AND TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), TIMESTAMP_MILLIS(CAST(event_timestamp / 1000 as INT64)), SECOND) <= ${lookBackWindow * 2
+		}))`;
 
 	return Promise.resolve(query);
 }
@@ -186,10 +265,14 @@ async function exportQueryResultToGCS(query) {
 	const [files] = await storage.bucket(GCS_BUCKET).getFiles({ prefix: fileName });
 	const uris = files.map((file) => `gs://${GCS_BUCKET}/${file.name}`);
 
-	sLog(`BIGQUERY EXPORT: ${watch.end()}`, {
-		NUMBER_OF_FILES: files.length,
-		...exportJob,
-	});
+	sLog(
+		`BIGQUERY EXPORT: ${watch.end()}`,
+		{
+			NUMBER_OF_FILES: files.length,
+			...exportJob,
+		},
+		"INFO"
+	);
 
 	return uris;
 }
@@ -225,7 +308,7 @@ async function loadGCSToMixpanel(uris) {
 	};
 
 	// @ts-ignore
-	const receipts = complete.filter((p) => p.status === "fulfilled").map(p => p.value);
+	const receipts = complete.filter((p) => p.status === "fulfilled").map((p) => p.value);
 	results.summary = summarizeImportResults(receipts);
 	results.total = results.success + results.failed;
 	results.successRate = results.success / results.total;
@@ -277,8 +360,6 @@ async function makeRequest(client, uri) {
 	}
 }
 
-
-
 /*
 ----
 LOAD
@@ -290,7 +371,7 @@ export async function LOAD_JOB(file) {
 	watch.start();
 	try {
 		const importJob = await GCStoMixpanel(file);
-		sLog(`LOAD ${parseGCSUri(file).file}: ${watch.end()}`, importJob, "DEBUG");
+		if (VERBOSE) sLog(`LOAD ${parseGCSUri(file).file}: ${watch.end()}`, importJob, "DEBUG");
 		return importJob;
 	} catch (error) {
 		sLog(`LOAD FAIL: ${watch.end()}`, { message: error.message, stack: error.stack }, "ERROR");
@@ -356,7 +437,6 @@ async function deleteAllFilesFromBucket() {
 HELPERS
 ----
 */
-
 
 function stringToBoolean(string) {
 	if (typeof string !== "string") {
