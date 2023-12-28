@@ -419,7 +419,7 @@ async function GCStoMixpanel(filePath) {
 
 		if (opts.recordType === "event") {
 			if (filePath.includes("intraday")) opts.tags = { import_type: "intraday sync" };
-			if (!filePath.includes("intraday")) opts.tags = { import_type: `daily: ${filePath.split("-")[0] || ""}` };
+			if (!filePath.includes("intraday")) opts.tags = { import_type: `daily: ${file?.split("-")[0] || ""}` };
 		}
 		// Pass the file to Mixpanel
 		const result = await Mixpanel(creds, data.createReadStream({ decompress: true }), opts);
