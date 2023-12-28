@@ -165,7 +165,7 @@ functions.http("go", async (req, res) => {
 			const watch = timer("SYNC");
 			watch.start();
 
-			sLog(`${INTRADAY ? "INTRADAY": DATE} SYNC START!`, {
+			sLog(`${INTRADAY ? "INTRADAY" : DATE} SYNC START!`, {
 				GCS_BUCKET,
 				BQ_DATASET_ID,
 				BQ_TABLE_ID,
@@ -183,7 +183,7 @@ functions.http("go", async (req, res) => {
 
 			const importTasks = await EXTRACT_JOB(INTRADAY);
 
-			sLog(`${INTRADAY ? "INTRADAY": DATE} SYNC COMPLETE: ${watch.end()}`, importTasks, "NOTICE");
+			sLog(`${INTRADAY ? "INTRADAY" : DATE} SYNC COMPLETE: ${watch.end()}`, importTasks, "NOTICE");
 
 			res.status(200).send(importTasks);
 			return;
@@ -417,6 +417,10 @@ async function GCStoMixpanel(filePath) {
 		// Download file to a temporary location
 		// await data.download({ destination: localFilePath, validation: false });
 
+		if (opts.recordType === "event") {
+			if (filePath.includes("intraday")) opts.tags = { import_type: "intraday sync" };
+			if (!filePath.includes("intraday")) opts.tags = { import_type: `daily: ${filePath.split("-")[0] || ""}` };
+		}
 		// Pass the file to Mixpanel
 		const result = await Mixpanel(creds, data.createReadStream({ decompress: true }), opts);
 
