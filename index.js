@@ -8,6 +8,7 @@
  *
  */
 
+process.env.NODE_NO_WARNINGS = "1"; // silence warnings
 import functions from "@google-cloud/functions-framework";
 import { BigQuery } from "@google-cloud/bigquery";
 import { Storage } from "@google-cloud/storage";
