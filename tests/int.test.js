@@ -1,21 +1,24 @@
-// integration.test.js
+// @ts-nocheck
+import { BigQuery } from "@google-cloud/bigquery";
+import { Storage } from "@google-cloud/storage";
+import { BACKFILL_PATCH, LOAD_POST, EXTRACT_GET, STORAGE_DELETE } from "../index";
+import dayjs from "dayjs";
+import utc from "dayjs/plugin/utc.js";
+dayjs.extend(utc);
+import dotenv from "dotenv";
+dotenv.config({ override: true, path: '.env.tests'});
 
-import { go } from './your-cloud-function-file'; // Adjust the path
-import { request } from 'supertest';
+let { BQ_DATASET_ID, BQ_TABLE_ID, GCS_BUCKET, MP_TOKEN, INTRADAY, NUM_ROWS, MP_SECRET } = process.env;
 
-jest.mock('@google-cloud/bigquery');
-jest.mock('@google-cloud/storage');
-// Mock any other external dependencies
+NUM_ROWS = parseInt(NUM_ROWS);
+INTRADAY = stringToBoolean(INTRADAY);
 
-describe('Cloud Function Integration', () => {
-    it('should handle a GET request and trigger data extraction', async () => {
-        // Mock the entire flow as needed, including BigQuery and Storage behaviors
-        // ...
 
-        const response = await request(go).get('/');
-        expect(response.statusCode).toBe(200);
-        // Add more assertions based on the expected behavior and outputs
-    });
-
-    // Add more tests for different scenarios, like POST requests
+describe('extract job', () => {
+	//todo
 });
+
+describe('load job', () => {
+	//todo
+});
+

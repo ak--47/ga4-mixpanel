@@ -19,4 +19,5 @@ yarn-error.log
 .idea/
 # macOS specific files
 .DS_Store
+.env.tests
 

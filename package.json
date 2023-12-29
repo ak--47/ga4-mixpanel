@@ -9,7 +9,8 @@
 		"deploy:func": "gcloud functions deploy ga4-mixpanel --gen2 --runtime nodejs20 --region us-central1 --trigger-http --memory 2GB --cpu 1 --entry-point go --source . --timeout=3600 --no-allow-unauthenticated --max-instances=1000 --min-instances=0 --concurrency=5",
 		"deploy:run": "sh deploy.sh",
 		"test": "node --no-warnings --experimental-vm-modules node_modules/jest/bin/jest.js",
-		"local": "RUNTIME=dev functions-framework --target=go --source . --signature-type=http"
+		"local": "RUNTIME=dev nodemon --exec 'functions-framework --target=go --source . --signature-type=http | bunyan -o short'",
+		"mock": "RUNTIME=test functions-framework --target=go --source . --signature-type=http"
 	},
 	"keywords": [],
 	"author": "ak@mixpanel.com",
@@ -22,14 +23,15 @@
 		"ak-tools": "^1.0.46",
 		"dayjs": "^1.11.10",
 		"dotenv": "^16.3.1",
-		"mixpanel-import": "^2.5.26",
+		"mixpanel-import": "^2.5.27",
 		"p-limit": "^5.0.0"
 	},
 	"devDependencies": {
 		"@jest/globals": "^29.7.0",
 		"@types/jest": "^29.5.11",
+		"bunyan": "^1.8.15",
 		"jest": "^29.7.0",
 		"nock": "^13.4.0",
-		"node-sql-parser": "^4.17.0"
+		"tree-kill": "^1.2.2"
 	}
 }

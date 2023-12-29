@@ -8,69 +8,71 @@
  *
  */
 
-process.env.NODE_NO_WARNINGS = "1"; // silence warnings
+// CLOUD DEPS
 import functions from "@google-cloud/functions-framework";
 import { BigQuery } from "@google-cloud/bigquery";
 import { Storage } from "@google-cloud/storage";
 import { GoogleAuth } from "google-auth-library";
+
+
+// LOCAL DEPS
 import Mixpanel from "mixpanel-import";
 import pLimit from "p-limit";
-import recon from "./recon.js";
-import { parseGCSUri, sLog, timer, isNil } from "ak-tools";
-
+import { parseGCSUri, sLog, timer, isNil, sleep } from "ak-tools";
 import dayjs from "dayjs";
 import utc from "dayjs/plugin/utc.js";
 dayjs.extend(utc);
 import dotenv from "dotenv";
 dotenv.config();
 
-// these were used when NOT streaming E2E
-// import path from "path";
-// import os from "os";
-// import fs from "fs";
+// JSON 
+import { readFileSync } from 'fs';
+let JSON_CONFIG = {};
+try {
+	// Read the file from the top-level directory
+	const rawData = readFileSync('./CONFIG.json', 'utf8');
 
-// TODAY STUFF
-const timeFileLabel = dayjs.utc().format("DD-HH:mm");
+	// Parse the JSON data
+	JSON_CONFIG = JSON.parse(rawData);
+} catch (error) {
+	console.log("CONFIG.json not found or invalid. Using default configuration.");
+}
 
-let filePrefix = `temp`;
-let fileName = `${filePrefix}-${timeFileLabel}-`;
-
-import JSON_CONFIG from "./CONFIG.json" assert { type: "json" };
+// CONFIGURATION (effectively globals)
 let {
-	BQ_DATASET_ID = "",
-	BQ_TABLE_ID = "",
-	GCS_BUCKET = "",
-	MP_TOKEN = "",
-	MP_SECRET = "",
-	MP_PROJECT = "",
-	URL = ``,
-	SQL = "SELECT *",
+	BQ_DATASET_ID = "", // dataset to sync
+	BQ_TABLE_ID = "", // table to sync
+	GCS_BUCKET = "", // gcs bucket to store temp files
+	MP_TOKEN = "", // mp token
+	MP_SECRET = "", // mp secret
+	MP_PROJECT = "", // mp project id
+	SQL = "SELECT *", // SQL query to run
 	CONCURRENCY = 30, // how many requests to make at once
 	LATE = 60, // how many seconds late is a late event (INTRADAY ONLY)
 	LOOKBACK = 3600, // how many seconds to look back (INTRADAY ONLY)
-	INTRADAY = true,
-	VERBOSE = false,
-	DAYS_AGO = 2,
-	TYPE = "event",
+	INTRADAY = true, // whether to sync intraday or whole table
+	VERBOSE = false, // whether to log debug info
+	DAYS_AGO = 2, // how many days ago to sync for whole table
+	TYPE = "event", // event, user, group
 } = JSON_CONFIG;
 
+// LABELS
+const timeFileLabel = dayjs.utc().format("DD-HH:mm");
+let filePrefix = `temp`;
+let fileName = `${filePrefix}-${timeFileLabel}-`;
+let RUNTIME_URL = ""; // IMPORTANT: this is what allows the service to call itself
 
-
-// GCP
+// ENV CONFIG
 if (process.env.GCS_BUCKET) GCS_BUCKET = process.env.GCS_BUCKET;
 if (process.env.BQ_DATASET_ID) BQ_DATASET_ID = process.env.BQ_DATASET_ID;
 if (process.env.BQ_TABLE_ID) BQ_TABLE_ID = process.env.BQ_TABLE_ID;
-if (process.env.URL) URL = process.env.URL;
 if (process.env.SQL) SQL = process.env.SQL;
 
-// MIXPANEL 
 if (process.env.MP_SECRET) MP_SECRET = process.env.MP_SECRET;
 if (process.env.MP_PROJECT) MP_PROJECT = process.env.MP_PROJECT;
 if (process.env.MP_TOKEN) MP_TOKEN = process.env.MP_TOKEN;
 if (process.env.TYPE) TYPE = process.env.TYPE;
 
-
-// INTRADAY
 if (process.env.CONCURRENCY) CONCURRENCY = parseInt(process.env.CONCURRENCY);
 if (process.env.LATE) LATE = parseInt(process.env.LATE);
 if (process.env.LOOKBACK) LOOKBACK = parseInt(process.env.LOOKBACK);
@@ -78,40 +80,31 @@ if (process.env.DAYS_AGO) DAYS_AGO = parseInt(process.env.DAYS_AGO);
 let DATE = dayjs.utc().subtract(DAYS_AGO, "d").format("YYYYMMDD");
 if (process.env.DATE) DATE = dayjs(process.env.DATE.toString()).format("YYYYMMDD");
 
+if (process.env.INTRADAY) INTRADAY = strToBool(process.env.INTRADAY);
+if (process.env.VERBOSE) VERBOSE = strToBool(process.env.VERBOSE);
 
-if (process.env.INTRADAY) INTRADAY = stringToBoolean(process.env.INTRADAY);
-if (process.env.VERBOSE) VERBOSE = stringToBoolean(process.env.VERBOSE);
-
+// THESE NEED TO BE SET GLOBALLY
 if (!SQL) SQL = "SELECT *";
-if (!URL) sLog('URL MUST BE SET IN CONFIG.JSON OR AS ENV VAR', {}, "CRITICAL");
-
-if (!GCS_BUCKET) sLog('GCS_BUCKET MUST BE SET IN CONFIG.JSON OR AS ENV VAR', {}, "CRITICAL");
-// <-- TODO: make this dynamic ?!?!?
+// if (!GCS_BUCKET) sLog('GCS_BUCKET MUST BE SET IN CONFIG.JSON OR AS ENV VAR', { error: "missing GCS_BUCKET" }, "CRITICAL");
 
 // GCP RESOURCES
 const bigquery = new BigQuery();
 const storage = new Storage();
 
-
-
 // CREDENTIALS
 /** @type {import('mixpanel-import').Creds} */
-const creds = {};
+let creds = {};
 if (MP_TOKEN) creds.token = MP_TOKEN;
 if (MP_SECRET) creds.secret = MP_SECRET;
 if (MP_PROJECT) creds.project = MP_PROJECT;
 
 if (!["event", "user", "group"].includes(TYPE)) throw new Error(`TYPE must be one of: ${["event", "user", "group"]}`);
 
-/** @type {import('mixpanel-import').RecordType} */
-// @ts-ignore
-const recordType = TYPE;
 
 // MIXPANEL IMPORT OPTIONS
 /** @type {import('mixpanel-import').Options} */
 const opts = {
 	vendor: "ga4",
-	recordType,
 	abridged: true,
 	streamFormat: "jsonl",
 	strict: false,
@@ -125,41 +118,23 @@ const opts = {
 
 // ENTRY POINT
 functions.http("go", async (req, res) => {
+
+	// Re-construct the full URL so the service can call itself
+	let protocol = req.protocol || 'http';
+	let host = req.get('host');
+	let path = req.path;
+	RUNTIME_URL = `${protocol}://${host}${path}`;
+
 	try {
-		// INSTANCE METADATA
-		if (req.method === "OPTIONS") {
-			const metadata = await recon();
-			sLog("METADATA", metadata, "NOTICE");
-			res.status(200).send(metadata);
-			return;
-		}
-
+		// PROCESS PARAMS
+		const queryString = processRequestParams(req);
 		// EXTRACT DATA
-		if (req.method === "GET" || (req.method === "PATCH" && req.body && req.body.sql)) {
-			//note: query params OVERRIDE env vars
-
-			//strings
-			BQ_TABLE_ID = req.query.table?.toString() || BQ_TABLE_ID;
-			BQ_DATASET_ID = req.query.dataset?.toString() || BQ_DATASET_ID;
-			MP_TOKEN = req.query.token?.toString() || MP_TOKEN;
-			DATE = req.query.date ? dayjs(req.query.date.toString()).format("YYYYMMDD") : DATE;
-			SQL = req.body.sql ? req.body.sql.toString() : SQL;
-
-			//numbers
-			LOOKBACK = req.query.lookback ? parseInt(req.query.lookback.toString()) : LOOKBACK;
-			LATE = req.query.late ? parseInt(req.query.late.toString()) : LATE;
-			CONCURRENCY = req.query.concurrency ? parseInt(req.query.concurrency.toString()) : CONCURRENCY;
-			DAYS_AGO = req.query.days_ago ? parseInt(req.query.days_ago.toString()) : DAYS_AGO;
-			if (req.query.days_ago) DATE = dayjs.utc().subtract(DAYS_AGO, "d").format("YYYYMMDD");
-
-			//switches
-			INTRADAY = !isNil(req.query.intraday) ? stringToBoolean(req.query.intraday) : INTRADAY;
-
-			if (!MP_TOKEN && !MP_SECRET) throw new Error("MP_TOKEN or MP_SECRET is required");
-			if (!BQ_TABLE_ID) BQ_TABLE_ID = `events_${DATE}`; //date = today if not specified
-
+		if (req.method === "GET") {
 			//having a 'DATE' and 'INTRADAY' is not supported
 			if (INTRADAY) DATE = "";
+
+			//setup file name
+			fileName = `${TYPE}-`.concat(fileName);
 			if (INTRADAY) fileName = `intraday-`.concat(fileName);
 			if (!INTRADAY) fileName = `${DATE}-`.concat(fileName);
 
@@ -182,7 +157,7 @@ functions.http("go", async (req, res) => {
 				VERBOSE
 			}, "NOTICE");
 
-			const importTasks = await EXTRACT_JOB(INTRADAY);
+			const importTasks = await EXTRACT_GET(INTRADAY, queryString);
 
 			sLog(`${INTRADAY ? "INTRADAY" : DATE} SYNC COMPLETE: ${watch.end()}`, importTasks, "NOTICE");
 
@@ -192,16 +167,20 @@ functions.http("go", async (req, res) => {
 
 		// LOAD DATA
 		if (req.method === "POST" && req.body && req.body.file) {
-			const loadResult = await LOAD_JOB(req.body.file);
+			const loadResult = await LOAD_POST(req.body.file);
 			res.status(200).send(loadResult);
 			return;
 		}
 
 		// DELETE DATA
 		if (req.method === "DELETE") {
-			const deleted = await deleteAllFilesFromBucket();
+			const deleted = await STORAGE_DELETE();
 			res.status(200).send({ deleted });
 			return;
+		}
+
+		if (req.method === "PATCH") {
+			const imported = await BACKFILL_PATCH();
 		}
 
 		// FAIL
@@ -213,21 +192,22 @@ functions.http("go", async (req, res) => {
 	}
 });
 
+
+
 /*
 ----
-EXTRACT
+CORE API
 ----
 */
 
-
-export async function EXTRACT_JOB(INTRADAY = true) {
+export async function EXTRACT_GET(INTRADAY = true, queryString = "") {
 	const watch = timer("SYNC");
 	watch.start();
 	try {
 		const QUERY = await buildSQLQuery(BQ_DATASET_ID, BQ_TABLE_ID, INTRADAY, LOOKBACK, LATE, TYPE, SQL);
 		if (VERBOSE) sLog(`RUNNING ${INTRADAY ? "INTRADAY" : "WHOLE TABLE"} QUERY`, { QUERY }, "DEBUG");
-		const GCS_URIs = await exportQueryResultToGCS(QUERY);
-		const importTasks = await loadGCSToMixpanel(GCS_URIs);
+		const GCS_URIs = await bigquery_to_storage(QUERY);
+		const importTasks = await spawn_file_workers(GCS_URIs, queryString);
 		watch.end();
 		return importTasks;
 	} catch (error) {
@@ -235,36 +215,75 @@ export async function EXTRACT_JOB(INTRADAY = true) {
 		throw error;
 	}
 }
-/**
- * @param  {string} TABLE_ID
- * @param  {string | boolean} [intraday=false]
- * @param  {number} [lookBackWindow=3600]
- * @param  {number} [late=60]
- * @param  {string} [type="event"]
- */
-async function buildSQLQuery(BQ_DATASET_ID, TABLE_ID, intraday = false, lookBackWindow = 3600, late = 60, type = "event", SQL = "SELECT *") {
-	// i.e. intraday vs full day
-	// .events_intraday_*
-	// .events_*  or .events_20231222
-	let query = `${SQL} FROM \`${BQ_DATASET_ID}.`;
-	if (intraday) query += `events_intraday_*\``;
-	if (!intraday) query += `${TABLE_ID}\``;
-	if (intraday || type === "user") query += `\nWHERE\n`;
 
-	if (type === "user") query += `(user_properties IS NOT NULL)`;
-	if (intraday && type === "user") query += `\nAND\n`;
+export async function STORAGE_DELETE() {
+	const watch = timer("delete");
+	watch.start();
+	let deleted = 0;
+	const [files] = await storage.bucket(GCS_BUCKET).getFiles();
+	const fileToDelete = files.filter((file) => file.name.includes(filePrefix));
 
-	// events in the last lookBackWindow (seconds)
-	if (intraday) query += `((TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), TIMESTAMP_MILLIS(CAST(event_timestamp / 1000 as INT64)), SECOND) <= ${lookBackWindow + 60})`;
-	if (intraday) query += `\nOR\n`;
-	// events that are late (seconds)
-	if (intraday) query += `(event_server_timestamp_offset > ${(late + 30) * 1000000} AND TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), TIMESTAMP_MILLIS(CAST(event_timestamp / 1000 as INT64)), SECOND) <= ${lookBackWindow * 2
-		}))`;
+	// Define the concurrency limit, e.g., 5 tasks at a time
+	const limit = pLimit(CONCURRENCY);
 
-	return Promise.resolve(query);
+	// Create an array of promises, each limited by pLimit
+	const deletePromises = fileToDelete.map((file) =>
+		limit(async () => {
+			await file.delete();
+			return 1; // Return 1 for each successful deletion
+		})
+	);
+
+	// Use Promise.allSettled to wait for all the delete operations to complete
+	const results = await Promise.allSettled(deletePromises);
+
+	// Count successful deletions
+	deleted = results.reduce((acc, result) => acc + (result.status === "fulfilled" ? result.value : 0), 0);
+
+	sLog(`STORAGE DELETE: ${watch.end()}`, { deleted });
+	return deleted;
 }
 
-async function exportQueryResultToGCS(query) {
+export async function LOAD_POST(file) {
+	const watch = timer("LOAD");
+	watch.start();
+	try {
+		const importJob = await storage_to_mixpanel(file);
+		if (VERBOSE) sLog(`LOAD ${parseGCSUri(file).file}: ${watch.end()}`, importJob, "DEBUG");
+		return importJob;
+	} catch (error) {
+		sLog(`task failed for ${file}: ${watch.end()}`, { message: error.message, stack: error.stack }, "ERROR");
+		throw error;
+	}
+}
+
+export async function BACKFILL_PATCH() {
+	const watch = timer("IMPORT");
+	watch.start();
+	try {
+		const [files] = await storage.bucket(GCS_BUCKET).getFiles();
+		const GCS_URIs = files.filter((file) => file.name.includes(filePrefix)).map((file) => `gs://${GCS_BUCKET}/${file.name}`);
+		// const QUERY = await buildSQLQuery(BQ_DATASET_ID, BQ_TABLE_ID, INTRADAY, LOOKBACK, LATE, TYPE, SQL);
+		// if (VERBOSE) sLog(`RUNNING ${INTRADAY ? "INTRADAY" : "WHOLE TABLE"} QUERY`, { QUERY }, "DEBUG");
+		//  await exportQueryResultToGCS(QUERY);
+		const importTasks = await spawn_file_workers(GCS_URIs);
+		watch.end();
+		return importTasks;
+	} catch (error) {
+		sLog(`IMPORT FAIL: ${watch.end()}`, { message: error.message, stack: error.stack }, "CRITICAL");
+		throw error;
+	}
+}
+
+
+/*
+----
+BUSINESS LOGIC
+----
+*/
+
+
+export async function bigquery_to_storage(query) {
 	const watch = timer("bigquery");
 	watch.start();
 	const jobConfig = {
@@ -294,7 +313,7 @@ async function exportQueryResultToGCS(query) {
 	const uris = files.map((file) => `gs://${GCS_BUCKET}/${file.name}`);
 
 	sLog(
-		`BIGQUERY EXPORT: ${watch.end()}`,
+		`BIGQUERY ${INTRADAY ? "INTRADAY" : ""} EXPORT: ${watch.end()}`,
 		{
 			NUMBER_OF_FILES: files.length,
 			...exportJob,
@@ -305,7 +324,130 @@ async function exportQueryResultToGCS(query) {
 	return uris;
 }
 
-async function pollJob(job) {
+export async function storage_to_mixpanel(filePath) {
+	const { bucket, file, uri } = parseGCSUri(filePath);
+	const data = await storage.bucket(bucket).file(file);
+
+	try {
+		const watch = timer("file");
+		watch.start();
+		await checkFileExists(data, filePath);
+
+		const [date, recordType] = file.split("-");
+
+		// @ts-ignore
+		opts.recordType = recordType;
+
+		if (opts.recordType === "event") {
+			if (filePath.includes("intraday")) opts.tags = { import_type: "intraday sync" };
+			if (!filePath.includes("intraday")) opts.tags = { import_type: `daily: ${date || ""}` };
+		}
+
+		if (opts.recordType === "user") {
+			opts.dedupe = true;
+			opts.abridged = false;
+			opts.transformFunc = (data) => {
+				data["$token"] = MP_TOKEN;
+				return data;
+			};
+		}
+
+		// Pass the file to Mixpanel
+		const result = await Mixpanel(creds, data.createReadStream({ decompress: true }), opts);
+
+		// Delete the file from GCS
+		await data.delete();
+		return result;
+
+	} catch (error) {
+		sLog(`error loading file: ${filePath}`, { file, message: error.message, stack: error.stack }, "ERROR");
+		throw error;
+	}
+}
+
+/**
+ * @typedef {import('mixpanel-import').ImportResults} ImportResults
+ */
+export async function spawn_file_workers(uris, queryString = "") {
+	const auth = new GoogleAuth();
+	let client;
+	if (RUNTIME_URL.includes('localhost')) {
+		client = await auth.getClient();
+	}
+	else {
+		client = await auth.getIdTokenClient(RUNTIME_URL);
+	}
+
+	const limit = pLimit(CONCURRENCY);
+	const requestPromises = uris.map((uri) => {
+		return limit(() => build_request(client, uri, queryString));
+	});
+	const complete = await Promise.allSettled(requestPromises);
+	const results = {
+		files_success: complete.filter((p) => p.status === "fulfilled").length,
+		files_failed: complete.filter((p) => p.status === "rejected").length,
+		files_total: complete.length,
+	};
+
+	// @ts-ignore
+	const receipts = complete.filter((p) => p.status === "fulfilled").map((p) => p.value);
+	results.summary = aggregateImportResults(receipts);
+	return results;
+}
+
+
+/*
+----
+HELPERS
+----
+*/
+
+function processRequestParams(req) {
+	//strings
+	BQ_TABLE_ID = req.query.table?.toString() || BQ_TABLE_ID;
+	BQ_DATASET_ID = req.query.dataset?.toString() || BQ_DATASET_ID;
+	GCS_BUCKET = req.query.bucket?.toString() || GCS_BUCKET;
+	MP_TOKEN = req.query.token?.toString() || MP_TOKEN;
+	DATE = req.query.date ? dayjs(req.query.date.toString()).format("YYYYMMDD") : DATE;
+	TYPE = req.query.type ? req.query.type.toString() : TYPE;
+
+	//numbers
+	LOOKBACK = req.query.lookback ? parseInt(req.query.lookback.toString()) : LOOKBACK;
+	LATE = req.query.late ? parseInt(req.query.late.toString()) : LATE;
+	CONCURRENCY = req.query.concurrency ? parseInt(req.query.concurrency.toString()) : CONCURRENCY;
+	DAYS_AGO = req.query.days_ago ? parseInt(req.query.days_ago.toString()) : DAYS_AGO;
+	if (req.query.days_ago) DATE = dayjs.utc().subtract(DAYS_AGO, "d").format("YYYYMMDD");
+
+	//switches
+	INTRADAY = !isNil(req.query.intraday) ? strToBool(req.query.intraday) : INTRADAY;
+
+	if (!MP_TOKEN && !MP_SECRET) throw new Error("MP_TOKEN or MP_SECRET is required");
+	if (!BQ_TABLE_ID) BQ_TABLE_ID = `events_${DATE}`; //date = today if not specified
+	if (MP_TOKEN) creds.token = MP_TOKEN;
+
+
+	//return fully constructed query params
+	// Initialize an object to hold parameters
+	let params = {};
+
+	// Loop through req.query and populate the params object
+	for (const key in req.query) {
+		if (req.query[key]) {
+			params[key] = req.query[key].toString();
+		}
+	}
+	// Construct query string
+	const queryString = Object.keys(params)
+		.filter(key => params[key] != null) // Filter out null or undefined values
+		.map(key => `${encodeURIComponent(key)}=${encodeURIComponent(params[key])}`)
+		.join('&');
+
+	return queryString;
+
+}
+
+
+export async function pollJob(job) {
 	// Poll the job status without fetching the query result rows
 	let jobMetadata;
 	do {
@@ -319,39 +461,14 @@ async function pollJob(job) {
 }
 
 /**
- * @typedef {import('mixpanel-import').ImportResults} ImportResults
- */
-
-async function loadGCSToMixpanel(uris) {
-	const auth = new GoogleAuth();
-	const client = await auth.getIdTokenClient(URL);
-	const limit = pLimit(CONCURRENCY);
-	const requestPromises = uris.map((uri) => {
-		return limit(() => makeRequest(client, uri));
-	});
-	const complete = await Promise.allSettled(requestPromises);
-	const results = {
-		files_success: complete.filter((p) => p.status === "fulfilled").length,
-		files_failed: complete.filter((p) => p.status === "rejected").length,
-	};
-
-	// @ts-ignore
-	const receipts = complete.filter((p) => p.status === "fulfilled").map((p) => p.value);
-	results.summary = summarizeImportResults(receipts);
-	results.total = results.success + results.failed;
-	results.successRate = results.success / results.total;
-	return results;
-}
-
-/**
  * @param  {import('google-auth-library').IdTokenClient} client
  * @param  {string} uri
  * @return {Promise<ImportResults | {}>}
  */
-async function makeRequest(client, uri) {
+export async function build_request(client, uri, queryString = "") {
 	try {
 		const req = await client.request({
-			url: URL,
+			url: RUNTIME_URL + "?" + queryString,
 			method: "POST",
 			data: { file: uri },
 			headers: {
@@ -378,6 +495,10 @@ async function makeRequest(client, uri) {
 
 					return Promise.resolve(false);
 				},
+				onRetryAttempt: (error) => {
+					const statusCode = error?.response?.status?.toString() || "";
+					if (VERBOSE) sLog(`retrying request for ${uri}`, { statusCode, message: error.message, stack: error.stack }, "DEBUG");
+				}
 			},
 		});
 		const { data } = req;
@@ -388,101 +509,74 @@ async function makeRequest(client, uri) {
 	}
 }
 
-/*
-----
-LOAD
-----
-*/
+/**
+ * @param  {string} TABLE_ID
+ * @param  {string | boolean} [intraday=false]
+ * @param  {number} [lookBackWindow=3600]
+ * @param  {number} [late=60]
+ * @param  {string} [type="event"]
+ */
+export async function buildSQLQuery(BQ_DATASET_ID, TABLE_ID, intraday = false, lookBackWindow = 3600, late = 60, type = "event", SQL = "SELECT *") {
+	// i.e. intraday vs full day
+	// .events_intraday_*
+	// .events_*  or .events_20231222
+	let query = `${SQL} FROM \`${BQ_DATASET_ID}.`;
+	if (intraday) query += `events_intraday_*\``;
+	if (!intraday) query += `${TABLE_ID}\``;
+	if (intraday || type === "user") query += `\nWHERE\n`;
 
-export async function LOAD_JOB(file) {
-	const watch = timer("LOAD");
-	watch.start();
-	try {
-		const importJob = await GCStoMixpanel(file);
-		if (VERBOSE) sLog(`LOAD ${parseGCSUri(file).file}: ${watch.end()}`, importJob, "DEBUG");
-		return importJob;
-	} catch (error) {
-		sLog(`task failed for ${file}: ${watch.end()}`, { message: error.message, stack: error.stack }, "ERROR");
-		throw error;
+	if (type === "user") query += `(user_properties IS NOT NULL)`;
+	if (intraday && type === "user") query += `\nAND\n`;
+
+	// events in the last lookBackWindow (seconds)
+	if (intraday) query += `((TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), TIMESTAMP_MILLIS(CAST(event_timestamp / 1000 as INT64)), SECOND) <= ${lookBackWindow + 60})`;
+	if (intraday) query += `\nOR\n`;
+	// events that are late (seconds)
+	if (intraday) query += `(event_server_timestamp_offset > ${(late + 30) * 1000000} AND TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), TIMESTAMP_MILLIS(CAST(event_timestamp / 1000 as INT64)), SECOND) <= ${lookBackWindow * 2
+		}))`;
+
+	return Promise.resolve(query);
+}
+
+
+export async function checkFileExists(fileObject, filePath) {
+	// Retry mechanism for checking file existence
+	let exists = false;
+	for (let attempt = 1; attempt <= 10; attempt++) {
+		[exists] = await fileObject.exists();
+		if (exists) break;
+
+		if (VERBOSE) sLog(`File not found, retrying (${attempt}/10): ${filePath}`, {}, "INFO");
+		await sleep(10000); // 10 seconds delay
 	}
-}
 
-async function GCStoMixpanel(filePath) {
-	const { bucket, file, uri } = parseGCSUri(filePath);
-	const data = await storage.bucket(bucket).file(file);
-	// const localFilePath = path.join(os.tmpdir(), file);
-
-	try {
-		const watch = timer("file");
-		watch.start();
-		// Download file to a temporary location
-		// await data.download({ destination: localFilePath, validation: false });
-
-		if (opts.recordType === "event") {
-			if (filePath.includes("intraday")) opts.tags = { import_type: "intraday sync" };
-			if (!filePath.includes("intraday")) opts.tags = { import_type: `daily: ${file?.split("-")[0] || ""}` };
-		}
-		// Pass the file to Mixpanel
-		const result = await Mixpanel(creds, data.createReadStream({ decompress: true }), opts);
-
-		// Delete the file from temporary storage
-		// fs.unlinkSync(localFilePath);
-
-		// Delete the file from GCS
-		await data.delete();
-		return result;
-	} catch (error) {
-		sLog(`error loading file: ${filePath}`, { file, message: error.message, stack: error.stack }, "ERROR");
-		throw error;
+	if (!exists) {
+		throw new Error(`File not found after multiple attempts: ${filePath}`);
 	}
+
+	return exists;
+
+
 }
 
-async function deleteAllFilesFromBucket() {
-	const watch = timer("delete");
-	watch.start();
-	let deleted = 0;
-	const [files] = await storage.bucket(GCS_BUCKET).getFiles({ prefix: filePrefix });
-
-	// Define the concurrency limit, e.g., 5 tasks at a time
-	const limit = pLimit(CONCURRENCY);
-
-	// Create an array of promises, each limited by pLimit
-	const deletePromises = files.map((file) =>
-		limit(async () => {
-			await file.delete();
-			return 1; // Return 1 for each successful deletion
-		})
-	);
-
-	// Use Promise.allSettled to wait for all the delete operations to complete
-	const results = await Promise.allSettled(deletePromises);
-
-	// Count successful deletions
-	deleted = results.reduce((acc, result) => acc + (result.status === "fulfilled" ? result.value : 0), 0);
-
-	sLog(`STORAGE DELETE: ${watch.end()}`);
-	return deleted;
-}
-
-/*
-----
-HELPERS
-----
-*/
-
-function stringToBoolean(string) {
+export function strToBool(string) {
 	if (typeof string !== "string") {
 		return Boolean(string);
 	}
 
 	switch (string.toLowerCase().trim()) {
 		case "true":
+			return true;
 		case "yes":
+			return true;
 		case "1":
 			return true;
 		case "false":
+			return false;
 		case "no":
+			return false;
 		case "0":
+			return false;
 		case "":
 			return false;
 		default:
@@ -493,7 +587,29 @@ function stringToBoolean(string) {
 /**
  * @param  {ImportResults[]} results
  */
-function summarizeImportResults(results) {
+export function aggregateImportResults(results) {
+
+	const template = {
+		success: 0,
+		failed: 0,
+		total: 0,
+		eps: 0,
+		mbps: 0,
+		rps: 0,
+		bytes: 0,
+		duration: 0,
+		rateLimit: 0,
+		clientErrors: 0,
+		serverErrors: 0,
+		batches: 0,
+		requests: 0,
+		retries: 0,
+		errors: [],
+		duplicates: 0
+	};
+
+	if (!Array.isArray(results)) return template;
+	if (!results.length) return template;
 	const summary = results.reduce(
 		/**
 		 * @param  {ImportResults} acc
@@ -509,33 +625,31 @@ function summarizeImportResults(results) {
 			acc.rateLimit += curr.rateLimit;
 			acc.clientErrors += curr.clientErrors;
 			acc.serverErrors += curr.serverErrors;
+			acc.batches += curr.batches;
+			acc.requests += curr.requests;
+			acc.retries += curr.retries;
+			acc.errors.push(...curr.errors);
+			acc.duplicates += curr.duplicates;
+
 
 			// Accumulating for averaging later
 			acc.eps += curr.eps;
 			acc.mbps += curr.mbps;
+			acc.rps += curr.rps;
+
 			// ... handle other properties as needed
 
 			return acc;
 		},
 		// @ts-ignore
-		{
-			success: 0,
-			failed: 0,
-			total: 0,
-			eps: 0,
-			mbps: 0,
-			bytes: 0,
-			duration: 0,
-			rateLimit: 0,
-			clientErrors: 0,
-			serverErrors: 0,
-		}
+		template
 	);
 
 	// Averaging properties
 	const count = results.length;
 	summary.eps /= count;
 	summary.mbps /= count;
+	summary.rps /= count;
 	// ... average other properties as needed
 
 	return summary;

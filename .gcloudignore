@@ -17,3 +17,5 @@ node_modules
 runner.mjs
 .vscode
 .env
+tests.env
+recon.js
