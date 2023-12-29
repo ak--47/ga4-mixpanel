@@ -54,6 +54,7 @@ let {
 	VERBOSE = false, // whether to log debug info
 	DAYS_AGO = 2, // how many days ago to sync for whole table
 	TYPE = "event", // event, user, group
+	URL = ""
 } = JSON_CONFIG;
 
 // LABELS
@@ -66,6 +67,7 @@ let RUNTIME_URL = ""; // IMPORTANT: this is what allows the service to call itse
 if (process.env.GCS_BUCKET) GCS_BUCKET = process.env.GCS_BUCKET;
 if (process.env.BQ_DATASET_ID) BQ_DATASET_ID = process.env.BQ_DATASET_ID;
 if (process.env.BQ_TABLE_ID) BQ_TABLE_ID = process.env.BQ_TABLE_ID;
+if (process.env.URL) URL = process.env.URL;
 if (process.env.SQL) SQL = process.env.SQL;
 
 if (process.env.MP_SECRET) MP_SECRET = process.env.MP_SECRET;
@@ -125,6 +127,7 @@ functions.http("go", async (req, res) => {
 	let path = req.path;
 	RUNTIME_URL = `${protocol}://${host}${path}`;
 
+
 	try {
 		// PROCESS PARAMS
 		const queryString = process_request_params(req);
@@ -154,9 +157,12 @@ functions.http("go", async (req, res) => {
 				DAYS_AGO,
 				DATE,
 				INTRADAY,
-				VERBOSE
+				VERBOSE,
+				RUNTIME_URL,
 			}, "NOTICE");
-
+			
+			if (URL) RUNTIME_URL = URL;
+			
 			const importTasks = await EXTRACT_GET(INTRADAY, queryString);
 
 			sLog(`${INTRADAY ? "INTRADAY" : DATE} SYNC COMPLETE: ${watch.end()}`, importTasks, "NOTICE");
