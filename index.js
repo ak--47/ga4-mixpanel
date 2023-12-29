@@ -127,7 +127,7 @@ functions.http("go", async (req, res) => {
 
 	try {
 		// PROCESS PARAMS
-		const queryString = processRequestParams(req);
+		const queryString = process_request_params(req);
 		// EXTRACT DATA
 		if (req.method === "GET") {
 			//having a 'DATE' and 'INTRADAY' is not supported
@@ -181,6 +181,8 @@ functions.http("go", async (req, res) => {
 
 		if (req.method === "PATCH") {
 			const imported = await BACKFILL_PATCH();
+			res.status(200).send(imported);
+			return;
 		}
 
 		// FAIL
@@ -197,6 +199,7 @@ functions.http("go", async (req, res) => {
 /*
 ----
 CORE API
+these are covered by e2e tests
 ----
 */
 
@@ -204,7 +207,7 @@ export async function EXTRACT_GET(INTRADAY = true, queryString = "") {
 	const watch = timer("SYNC");
 	watch.start();
 	try {
-		const QUERY = await buildSQLQuery(BQ_DATASET_ID, BQ_TABLE_ID, INTRADAY, LOOKBACK, LATE, TYPE, SQL);
+		const QUERY = await build_sql_query(BQ_DATASET_ID, BQ_TABLE_ID, INTRADAY, LOOKBACK, LATE, TYPE, SQL);
 		if (VERBOSE) sLog(`RUNNING ${INTRADAY ? "INTRADAY" : "WHOLE TABLE"} QUERY`, { QUERY }, "DEBUG");
 		const GCS_URIs = await bigquery_to_storage(QUERY);
 		const importTasks = await spawn_file_workers(GCS_URIs, queryString);
@@ -279,6 +282,7 @@ export async function BACKFILL_PATCH() {
 /*
 ----
 BUSINESS LOGIC
+these are largely untested
 ----
 */
 
@@ -297,7 +301,7 @@ export async function bigquery_to_storage(query) {
 	try {
 		// @ts-ignore
 		[job] = await bigquery.createQueryJob(jobConfig);
-		await pollJob(job);
+		await poll_job(job);
 	} catch (error) {
 		sLog(`BIGQUERY FAIL: ${watch.end()}`, { message: error.message, stack: error.stack }, "CRITICAL");
 		throw error;
@@ -399,10 +403,11 @@ export async function spawn_file_workers(uris, queryString = "") {
 /*
 ----
 HELPERS
+these are covered by unit tests
 ----
 */
 
-function processRequestParams(req) {
+export function process_request_params(req) {
 	//strings
 	BQ_TABLE_ID = req.query.table?.toString() || BQ_TABLE_ID;
 	BQ_DATASET_ID = req.query.dataset?.toString() || BQ_DATASET_ID;
@@ -447,7 +452,7 @@ function processRequestParams(req) {
 }
 
 
-export async function pollJob(job) {
+export async function poll_job(job) {
 	// Poll the job status without fetching the query result rows
 	let jobMetadata;
 	do {
@@ -467,6 +472,7 @@ export async function pollJob(job) {
  */
 export async function build_request(client, uri, queryString = "") {
 	try {
+		let retryAttempt = 0;
 		const req = await client.request({
 			url: RUNTIME_URL + "?" + queryString,
 			method: "POST",
@@ -475,7 +481,7 @@ export async function build_request(client, uri, queryString = "") {
 				"Content-Type": "application/json",
 			},
 			retryConfig: {
-				retry: 10,
+				retry: 15,
 				statusCodesToRetry: [
 					[100, 199],
 					[400, 499],
@@ -497,7 +503,8 @@ export async function build_request(client, uri, queryString = "") {
 				},
 				onRetryAttempt: (error) => {
 					const statusCode = error?.response?.status?.toString() || "";
-					if (VERBOSE) sLog(`retrying request for ${uri}`, { statusCode, message: error.message, stack: error.stack }, "DEBUG");
+					retryAttempt++;
+					if (VERBOSE) sLog(`retry #${retryAttempt} for ${uri}`, { statusCode, message: error.message, stack: error.stack }, "DEBUG");
 				}
 			},
 		});
@@ -516,7 +523,7 @@ export async function build_request(client, uri, queryString = "") {
  * @param  {number} [late=60]
  * @param  {string} [type="event"]
  */
-export async function buildSQLQuery(BQ_DATASET_ID, TABLE_ID, intraday = false, lookBackWindow = 3600, late = 60, type = "event", SQL = "SELECT *") {
+export async function build_sql_query(BQ_DATASET_ID, TABLE_ID, intraday = false, lookBackWindow = 3600, late = 60, type = "event", SQL = "SELECT *") {
 	// i.e. intraday vs full day
 	// .events_intraday_*
 	// .events_*  or .events_20231222

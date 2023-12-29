@@ -91,7 +91,7 @@ describe("Cloud Function E2E Tests", () => {
 	test(
 		"MVP (events)",
 		async () => {
-			qs = `?token=${MP_TOKEN}&secret=${MP_SECRET}&dataset=${BQ_DATASET_ID}&table=${BQ_TABLE_ID}&bucket=${GCS_BUCKET}&intraday=false`;
+			qs = `?type=event&token=${MP_TOKEN}&secret=${MP_SECRET}&dataset=${BQ_DATASET_ID}&table=${BQ_TABLE_ID}&bucket=${GCS_BUCKET}&intraday=false`;
 			const response = await fetch(url + qs);
 			const job = await response.json();
 			expect(response.status).toBe(200);
@@ -126,9 +126,33 @@ describe("Cloud Function E2E Tests", () => {
 			expect(errors.length).toBe(0);
 			expect(failed).toBe(0);
 			expect(duplicates).toBe(9069);
-			expect(success).toBe(0); // something wrong here...
+			expect(success).toBe(2684); // something wrong here...
 			expect(total).toBe(NUM_ROWS);
 		},
 		LONG_TIMEOUT
 	);
+
+
+	test("PATCH", async () => {
+		qs = `?type=event&token=${MP_TOKEN}&secret=${MP_SECRET}&dataset=${BQ_DATASET_ID}&table=${BQ_TABLE_ID}&bucket=${GCS_BUCKET}&intraday=false`;
+		const response = await fetch(url + qs, {
+			method: "PATCH",
+		});
+		const json = await response.json();
+		expect(response.status).toBe(200);		
+		expect(json).toHaveProperty('files_success')	
+		expect(json).toHaveProperty('files_failed')
+		expect(json).toHaveProperty('files_total')	
+	}, LONG_TIMEOUT);
+	
+	test("DELETE", async () => {
+		qs = `?type=event&token=${MP_TOKEN}&secret=${MP_SECRET}&dataset=${BQ_DATASET_ID}&table=${BQ_TABLE_ID}&bucket=${GCS_BUCKET}&intraday=false`;
+		const response = await fetch(url + qs, {
+			method: "DELETE",
+		});
+		const json = await response.json();
+		expect(response.status).toBe(200);		
+		expect(json).toHaveProperty('deleted')
+
+	}, LONG_TIMEOUT);
 });

@@ -21,5 +21,5 @@ ENV MP_TOKEN=your_mp_token
 ENV URL=your_url
 
 # Start the Functions Framework to serve your function
-CMD ["node", "node_modules/@google-cloud/functions-framework", "--target=go", "--signature-type=http"]
+CMD ["node", "node_modules/@google-cloud/functions-framework", "--target=go", "--signature-type=http", "--port=8080"]
 
