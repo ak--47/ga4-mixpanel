@@ -124,8 +124,10 @@ functions.http("go", async (req, res) => {
 	// Re-construct the full URL so the service can call itself
 	let protocol = req.protocol || 'http';
 	let host = req.get('host');
-	let path = req.path;
+	let forwardedPath = req.get('X-Forwarded-Path') || ''; // Adjust header key if necessary
+    let path = forwardedPath || req.path;
 	RUNTIME_URL = `${protocol}://${host}${path}`;
+	let ORIGINAL_URL = req.originalUrl; // This is the full URL, including query string
 
 
 	try {
@@ -147,8 +149,7 @@ functions.http("go", async (req, res) => {
 			sLog(`${INTRADAY ? "INTRADAY" : DATE} SYNC START!`, {
 				GCS_BUCKET,
 				BQ_DATASET_ID,
-				BQ_TABLE_ID,
-				URL,
+				BQ_TABLE_ID,				
 				SQL,
 				TYPE,
 				CONCURRENCY,
@@ -158,7 +159,9 @@ functions.http("go", async (req, res) => {
 				DATE,
 				INTRADAY,
 				VERBOSE,
+				URL,
 				RUNTIME_URL,
+				ORIGINAL_URL
 			}, "NOTICE");
 			
 			if (URL) RUNTIME_URL = URL;
