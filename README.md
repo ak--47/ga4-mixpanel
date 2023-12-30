@@ -101,7 +101,6 @@ if you turned intraday off in as a query param
 
 ```
 curl https://ga4-mixpanel-123456789-uc.a.run.app?intraday=false
-
 ```
 this will sync the **previous day's table** with Mixpanel (for yesterday's date)
 
@@ -128,9 +127,9 @@ there are a few other URL params you can specify:
 | `late`       | 60            | Threshold in seconds for an event to be considered late (applicable for intraday data).         |
 | `concurrency`| 30            | The number of concurrent requests made to Mixpanel.                                            |
 | `days_ago`   | 2             | Sync data from a specific number of days ago. Useful for backfilling historical data. Takes priority over `date`          |
-| `type`   | 'event'             | `event`, `user`, or `group` to select the type of data you are importing          |
+| `type`   | `event`             | `event`, `user`, or `group` to select the type of data you are importing          |
 
-**note**: depending on your deployment strategy, you may get a service URL that looks like `{service-name}.run.app` or `{region}.cloudfunctions.net/{service-name}` 
+**note**: depending on your [deployment strategy](#deploy), you may get a service URL that looks like `{service-name}.run.app` or `{region}.cloudfunctions.net/{service-name}` 
 
 the `.run.app` suffix is for Cloud Run (and Cloud Functions gen 2); the `cloudfunctions.net` suffix is for Cloud Functions. **It is strongly recommend that you use the Cloud Run style URLs for this service:**
 
@@ -145,7 +144,7 @@ Cloud Run: https://ga4-mixpanel-func-lmozz6xkha-uc.a.run.app
 
 **note**:	^ if you use the cloud functions URL, you will need to pass the service it's own URL as an environment variable, JSON.config, or param to the service like this: `curl https://us-central1-mixpanel-gtm-training.cloudfunctions.net/ga4-mixpanel-func?URL=https://us-central1-mixpanel-gtm-training.cloudfunctions.net/ga4-mixpanel-func`
 
-This service **needs to know its own URL**, so it can call itself. For some reason, the cloudfunction.net (gen 1) network gateway doesn't provide the full orginalUrl in the request params, so it is impossible to derive at runtime. this is weird becuase with the Cloud Run style of URLs, this was not a problem.
+This service **needs to know its own URL**, so it can call itself. For some reason, the cloudfunction.net (gen 1) network gateway doesn't provide the full originalUrl in the request params, so it is impossible to derive at runtime. this is weird because with the Cloud Run style of URLs, this was not a problem.
 
 Anyway, just do yourself a favor and use Cloud Run URLs (`*.run.app`) for this service!
 
