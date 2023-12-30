@@ -1,25 +1,17 @@
-# Use an official Node.js runtime as a parent image
+# Use the official Node.js 20 image.
+# https://hub.docker.com/_/node
 FROM node:20
 
-# Set the working directory in the container
+# Create and change to the app directory.
 WORKDIR /usr/src/app
 
-# Copy the current directory contents into the container at /usr/src/app
-COPY . .
+# Copy local code to the container image.
+COPY . ./
 
-# Install any needed packages specified in package.json
-RUN npm install
+# Install production dependencies.
+RUN npm install --only=production
 
-# Make port 8080 available to the world outside this container
-EXPOSE 8080
+ENV PORT=8080
 
-# Define environment variables
-ENV GCP_PROJECT=your_project_id
-ENV BQ_DATASET_ID=your_dataset_id
-ENV GCS_BUCKET=your_bucket_name
-ENV MP_TOKEN=your_mp_token
-ENV URL=your_url
-
-# Start the Functions Framework to serve your function
-CMD ["node", "node_modules/@google-cloud/functions-framework", "--target=go", "--signature-type=http", "--port=8080"]
-
+# Run the web service on container startup.
+CMD [ "npm", "start" ]

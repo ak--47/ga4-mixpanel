@@ -52,7 +52,7 @@ let {
 	LOOKBACK = 3600, // how many seconds to look back (INTRADAY ONLY)
 	INTRADAY = true, // whether to sync intraday or whole table
 	VERBOSE = false, // whether to log debug info
-	DAYS_AGO = 2, // how many days ago to sync for whole table
+	DAYS_AGO = 1, // how many days ago to sync for whole table
 	TYPE = "event", // event, user, group
 	URL = ""
 } = JSON_CONFIG;
@@ -81,13 +81,14 @@ if (process.env.LOOKBACK) LOOKBACK = parseInt(process.env.LOOKBACK);
 if (process.env.DAYS_AGO) DAYS_AGO = parseInt(process.env.DAYS_AGO);
 let DATE = dayjs.utc().subtract(DAYS_AGO, "d").format("YYYYMMDD");
 if (process.env.DATE) DATE = dayjs(process.env.DATE.toString()).format("YYYYMMDD");
+let DATE_LABEL = dayjs.utc(DATE, "YYYYMMDD").format("YYYY-MM-DD");
 
 if (process.env.INTRADAY) INTRADAY = strToBool(process.env.INTRADAY);
 if (process.env.VERBOSE) VERBOSE = strToBool(process.env.VERBOSE);
 
 // THESE NEED TO BE SET GLOBALLY
 if (!SQL) SQL = "SELECT *";
-// if (!GCS_BUCKET) sLog('GCS_BUCKET MUST BE SET IN CONFIG.JSON OR AS ENV VAR', { error: "missing GCS_BUCKET" }, "CRITICAL");
+
 
 // GCP RESOURCES
 const bigquery = new BigQuery();
@@ -125,7 +126,7 @@ functions.http("go", async (req, res) => {
 	let protocol = req.protocol || 'http';
 	let host = req.get('host');
 	let forwardedPath = req.get('X-Forwarded-Path') || ''; // Adjust header key if necessary
-    let path = forwardedPath || req.path;
+	let path = forwardedPath || req.path;
 	RUNTIME_URL = `${protocol}://${host}${path}`;
 	let ORIGINAL_URL = req.originalUrl; // This is the full URL, including query string
 
@@ -146,10 +147,10 @@ functions.http("go", async (req, res) => {
 			const watch = timer("SYNC");
 			watch.start();
 
-			sLog(`${INTRADAY ? "INTRADAY" : DATE} SYNC START!`, {
+			sLog(`${INTRADAY ? "INTRADAY" : DATE_LABEL} → SYNC START!`, {
 				GCS_BUCKET,
 				BQ_DATASET_ID,
-				BQ_TABLE_ID,				
+				BQ_TABLE_ID,
 				SQL,
 				TYPE,
 				CONCURRENCY,
@@ -163,12 +164,12 @@ functions.http("go", async (req, res) => {
 				RUNTIME_URL,
 				ORIGINAL_URL
 			}, "NOTICE");
-			
+
 			if (URL) RUNTIME_URL = URL;
-			
+
 			const importTasks = await EXTRACT_GET(INTRADAY, queryString);
 
-			sLog(`${INTRADAY ? "INTRADAY" : DATE} SYNC COMPLETE: ${watch.end()}`, importTasks, "NOTICE");
+			sLog(`${INTRADAY ? "INTRADAY" : DATE_LABEL} → SYNC COMPLETE: ${watch.end()}`, importTasks, "NOTICE");
 
 			res.status(200).send(importTasks);
 			return;
@@ -198,7 +199,7 @@ functions.http("go", async (req, res) => {
 		res.status(400).send("Bad Request; expecting GET to extract or POST with file to load or DELETE to delete all files");
 		return;
 	} catch (err) {
-		sLog("JOB FAIL", { path: req.path, method: req.method, params: req.params, body: req.body }, "CRITICAL");
+		sLog(`${INTRADAY ? "INTRADAY" : DATE_LABEL} → JOB FAIL`, { path: req.path, method: req.method, params: req.params, body: req.body }, "CRITICAL");
 		res.status(500).send({ error: err.message }); // Send back a JSON error message
 	}
 });
@@ -217,13 +218,13 @@ export async function EXTRACT_GET(INTRADAY = true, queryString = "") {
 	watch.start();
 	try {
 		const QUERY = await build_sql_query(BQ_DATASET_ID, BQ_TABLE_ID, INTRADAY, LOOKBACK, LATE, TYPE, SQL);
-		if (VERBOSE) sLog(`RUNNING ${INTRADAY ? "INTRADAY" : "WHOLE TABLE"} QUERY`, { QUERY }, "DEBUG");
+		if (VERBOSE) sLog(`${INTRADAY ? "INTRADAY" : DATE_LABEL} → RUNNING QUERY`, { QUERY }, "DEBUG");
 		const GCS_URIs = await bigquery_to_storage(QUERY);
 		const importTasks = await spawn_file_workers(GCS_URIs, queryString);
 		watch.end();
 		return importTasks;
 	} catch (error) {
-		sLog(`SYNC FAIL: ${watch.end()}`, { message: error.message, stack: error.stack }, "CRITICAL");
+		sLog(`${INTRADAY ? "INTRADAY" : DATE_LABEL} →  SYNC FAIL: ${watch.end()}`, { message: error.message, stack: error.stack }, "CRITICAL");
 		throw error;
 	}
 }
@@ -231,29 +232,35 @@ export async function EXTRACT_GET(INTRADAY = true, queryString = "") {
 export async function STORAGE_DELETE() {
 	const watch = timer("delete");
 	watch.start();
-	let deleted = 0;
-	const [files] = await storage.bucket(GCS_BUCKET).getFiles();
-	const fileToDelete = files.filter((file) => file.name.includes(filePrefix));
+	try {
+		let deleted = 0;
+		const [files] = await storage.bucket(GCS_BUCKET).getFiles();
+		const fileToDelete = files.filter((file) => file.name.includes(filePrefix));
 
-	// Define the concurrency limit, e.g., 5 tasks at a time
-	const limit = pLimit(CONCURRENCY);
+		// Define the concurrency limit, e.g., 5 tasks at a time
+		const limit = pLimit(CONCURRENCY);
 
-	// Create an array of promises, each limited by pLimit
-	const deletePromises = fileToDelete.map((file) =>
-		limit(async () => {
-			await file.delete();
-			return 1; // Return 1 for each successful deletion
-		})
-	);
+		// Create an array of promises, each limited by pLimit
+		const deletePromises = fileToDelete.map((file) =>
+			limit(async () => {
+				await file.delete();
+				return 1; // Return 1 for each successful deletion
+			})
+		);
 
-	// Use Promise.allSettled to wait for all the delete operations to complete
-	const results = await Promise.allSettled(deletePromises);
+		// Use Promise.allSettled to wait for all the delete operations to complete
+		const results = await Promise.allSettled(deletePromises);
 
-	// Count successful deletions
-	deleted = results.reduce((acc, result) => acc + (result.status === "fulfilled" ? result.value : 0), 0);
+		// Count successful deletions
+		deleted = results.reduce((acc, result) => acc + (result.status === "fulfilled" ? result.value : 0), 0);
 
-	sLog(`STORAGE DELETE: ${watch.end()}`, { deleted });
-	return deleted;
+		sLog(`STORAGE DELETE: ${watch.end()}`, { deleted });
+		return deleted;
+	}
+	catch (error) {
+		sLog(`STORAGE DELETE FAIL: ${watch.end()}`, { message: error.message, stack: error.stack }, "CRITICAL");
+		throw error;
+	}
 }
 
 export async function LOAD_POST(file) {
@@ -261,10 +268,10 @@ export async function LOAD_POST(file) {
 	watch.start();
 	try {
 		const importJob = await storage_to_mixpanel(file);
-		if (VERBOSE) sLog(`LOAD ${parseGCSUri(file).file}: ${watch.end()}`, importJob, "DEBUG");
+		if (VERBOSE) sLog(`${INTRADAY ? "INTRADAY" : DATE_LABEL} → ${parseGCSUri(file).file}: ${watch.end()}`, importJob, "DEBUG");
 		return importJob;
 	} catch (error) {
-		sLog(`task failed for ${file}: ${watch.end()}`, { message: error.message, stack: error.stack }, "ERROR");
+		sLog(`${INTRADAY ? "INTRADAY" : DATE_LABEL} → ${file}: ${watch.end()}`, { message: error.message, stack: error.stack }, "ERROR");
 		throw error;
 	}
 }
@@ -275,9 +282,6 @@ export async function BACKFILL_PATCH() {
 	try {
 		const [files] = await storage.bucket(GCS_BUCKET).getFiles();
 		const GCS_URIs = files.filter((file) => file.name.includes(filePrefix)).map((file) => `gs://${GCS_BUCKET}/${file.name}`);
-		// const QUERY = await buildSQLQuery(BQ_DATASET_ID, BQ_TABLE_ID, INTRADAY, LOOKBACK, LATE, TYPE, SQL);
-		// if (VERBOSE) sLog(`RUNNING ${INTRADAY ? "INTRADAY" : "WHOLE TABLE"} QUERY`, { QUERY }, "DEBUG");
-		//  await exportQueryResultToGCS(QUERY);
 		const importTasks = await spawn_file_workers(GCS_URIs);
 		watch.end();
 		return importTasks;
@@ -312,7 +316,7 @@ export async function bigquery_to_storage(query) {
 		[job] = await bigquery.createQueryJob(jobConfig);
 		await poll_job(job);
 	} catch (error) {
-		sLog(`BIGQUERY FAIL: ${watch.end()}`, { message: error.message, stack: error.stack }, "CRITICAL");
+		sLog(`${INTRADAY ? "INTRADAY" : DATE_LABEL} → BIGQUERY FAIL: ${watch.end()}`, { message: error.message, stack: error.stack }, "CRITICAL");
 		throw error;
 	}
 
@@ -326,7 +330,7 @@ export async function bigquery_to_storage(query) {
 	const uris = files.map((file) => `gs://${GCS_BUCKET}/${file.name}`);
 
 	sLog(
-		`BIGQUERY ${INTRADAY ? "INTRADAY" : ""} EXPORT: ${watch.end()}`,
+		`${INTRADAY ? "INTRADAY" : DATE_LABEL} → BIGQUERY EXPORT: ${watch.end()}`,
 		{
 			NUMBER_OF_FILES: files.length,
 			...exportJob,
@@ -347,13 +351,14 @@ export async function storage_to_mixpanel(filePath) {
 		await checkFileExists(data, filePath);
 
 		const [date, recordType] = file.split("-");
+		const dateLabel = dayjs.utc(date, "YYYYMMDD").format("YYYY-MM-DD");
 
 		// @ts-ignore
 		opts.recordType = recordType;
 
 		if (opts.recordType === "event") {
-			if (filePath.includes("intraday")) opts.tags = { import_type: "intraday sync" };
-			if (!filePath.includes("intraday")) opts.tags = { import_type: `daily: ${date || ""}` };
+			if (filePath.includes("intraday")) opts.tags = { import_type: "intraday" };
+			if (!filePath.includes("intraday")) opts.tags = { import_type: `daily: ${dateLabel || ""}` };
 		}
 
 		if (opts.recordType === "user") {
@@ -373,7 +378,7 @@ export async function storage_to_mixpanel(filePath) {
 		return result;
 
 	} catch (error) {
-		sLog(`error loading file: ${filePath}`, { file, message: error.message, stack: error.stack }, "ERROR");
+		sLog(`${INTRADAY ? "INTRADAY" : DATE_LABEL} → Mixpanel Error: ${filePath}`, { file, message: error.message, stack: error.stack }, "ERROR");
 		throw error;
 	}
 }
@@ -424,6 +429,7 @@ export function process_request_params(req) {
 	MP_TOKEN = req.query.token?.toString() || MP_TOKEN;
 	DATE = req.query.date ? dayjs(req.query.date.toString()).format("YYYYMMDD") : DATE;
 	TYPE = req.query.type ? req.query.type.toString() : TYPE;
+	URL = req.query.url ? req.query.url.toString() : URL;
 
 	//numbers
 	LOOKBACK = req.query.lookback ? parseInt(req.query.lookback.toString()) : LOOKBACK;
@@ -434,6 +440,7 @@ export function process_request_params(req) {
 
 	//switches
 	INTRADAY = !isNil(req.query.intraday) ? strToBool(req.query.intraday) : INTRADAY;
+	if (req.query.date) INTRADAY = false;
 
 	if (!MP_TOKEN && !MP_SECRET) throw new Error("MP_TOKEN or MP_SECRET is required");
 	if (!BQ_TABLE_ID) BQ_TABLE_ID = `events_${DATE}`; //date = today if not specified
@@ -513,14 +520,14 @@ export async function build_request(client, uri, queryString = "") {
 				onRetryAttempt: (error) => {
 					const statusCode = error?.response?.status?.toString() || "";
 					retryAttempt++;
-					if (VERBOSE) sLog(`retry #${retryAttempt} for ${uri}`, { statusCode, message: error.message, stack: error.stack }, "DEBUG");
+					if (VERBOSE) sLog(`${INTRADAY ? "INTRADAY" : DATE_LABEL} → retry #${retryAttempt} for ${uri}`, { statusCode, message: error.message, stack: error.stack }, "DEBUG");
 				}
 			},
 		});
 		const { data } = req;
 		return data;
 	} catch (error) {
-		sLog(`request error for ${uri}:`, { message: error.message, stack: error.stack, code: error.code }, "ERROR");
+		sLog(`${INTRADAY ? "INTRADAY" : DATE_LABEL} → REQUEST FAILED: ${uri}:`, { message: error.message, stack: error.stack, code: error.code }, "ERROR");
 		return {};
 	}
 }
@@ -537,19 +544,38 @@ export async function build_sql_query(BQ_DATASET_ID, TABLE_ID, intraday = false,
 	// .events_intraday_*
 	// .events_*  or .events_20231222
 	let query = `${SQL} FROM \`${BQ_DATASET_ID}.`;
-	if (intraday) query += `events_intraday_*\``;
-	if (!intraday) query += `${TABLE_ID}\``;
-	if (intraday || type === "user") query += `\nWHERE\n`;
 
-	if (type === "user") query += `(user_properties IS NOT NULL)`;
-	if (intraday && type === "user") query += `\nAND\n`;
+	// table name
+	if (intraday) {
+		query += `events_intraday_*\``;
+	} else {
+		query += `${TABLE_ID}\``;
+	}
 
+	// where
+	if (intraday || type === "user") {
+		query += `\nWHERE\n`;
+	}
+
+	// user props
+	if (type === "user") {
+		query += `(user_properties IS NOT NULL)`;
+	}
+	if (intraday && type === "user") {
+		query += `\nAND\n`;
+	}
+
+	// intraday events
 	// events in the last lookBackWindow (seconds)
-	if (intraday) query += `((TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), TIMESTAMP_MILLIS(CAST(event_timestamp / 1000 as INT64)), SECOND) <= ${lookBackWindow + 60})`;
-	if (intraday) query += `\nOR\n`;
+	if (intraday) {
+		query += `((TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), TIMESTAMP_MILLIS(CAST(event_timestamp / 1000 as INT64)), SECOND) <= ${lookBackWindow + 60})`;
+		query += `\nOR\n`;
+	}
+
 	// events that are late (seconds)
-	if (intraday) query += `(event_server_timestamp_offset > ${(late + 30) * 1000000} AND TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), TIMESTAMP_MILLIS(CAST(event_timestamp / 1000 as INT64)), SECOND) <= ${lookBackWindow * 2
-		}))`;
+	if (intraday) {
+		query += `(event_server_timestamp_offset > ${(late + 30) * 1000000} AND TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), TIMESTAMP_MILLIS(CAST(event_timestamp / 1000 as INT64)), SECOND) <= ${lookBackWindow * 2}))`;
+	}
 
 	return Promise.resolve(query);
 }
@@ -562,7 +588,7 @@ export async function checkFileExists(fileObject, filePath) {
 		[exists] = await fileObject.exists();
 		if (exists) break;
 
-		if (VERBOSE) sLog(`File not found, retrying (${attempt}/10): ${filePath}`, {}, "INFO");
+		if (VERBOSE) sLog(`${INTRADAY ? "INTRADAY" : DATE_LABEL} → ${filePath} not found retry (${attempt}/10)`, {}, "INFO");
 		await sleep(10000); // 10 seconds delay
 	}
 

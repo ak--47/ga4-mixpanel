@@ -4,13 +4,13 @@
 	"description": "ETL data from Google Analytics 4 to Mixpanel (through bigquey and cloud storage)",
 	"main": "index.js",
 	"scripts": {
-		"start": "node index.js",
-		"run": "nodemon runner.mjs",
-		"deploy:func": "gcloud functions deploy ga4-mixpanel-func --gen2 --runtime nodejs20 --region us-central1 --trigger-http --memory 2GB --cpu 1 --entry-point go --source . --timeout=3600 --no-allow-unauthenticated --max-instances=1000 --min-instances=0 --concurrency=5",
-		"deploy:run": "sh deploy.sh",
+		"start": "functions-framework --target=go --source . --signature-type=http --port=8080",
+		"deploy:func": "sh deploy_cloud_functions.sh",
+		"deploy:run": "sh deploy_cloud_run",
 		"test": "node --no-warnings --experimental-vm-modules node_modules/jest/bin/jest.js",
-		"local": "RUNTIME=dev nodemon --exec 'functions-framework --target=go --source . --signature-type=http | bunyan -o short'",
-		"mock": "RUNTIME=test functions-framework --target=go --source . --signature-type=http | bunyan -o short"
+		"coverage": "node --no-warnings --experimental-vm-modules node_modules/jest/bin/jest.js --coverage && open ./tests/coverage/lcov-report/index.html",
+		"dev": "RUNTIME=dev nodemon --exec 'functions-framework --target=go --source . --signature-type=http | bunyan -o short'",
+		"mock": "functions-framework --target=go --source . --signature-type=http 2>&1 | bunyan -o short"
 	},
 	"keywords": [],
 	"author": "ak@mixpanel.com",
