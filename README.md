@@ -43,7 +43,7 @@ alternatively use these commands to clone the repo and deploy the service:
 git clone https://github.com/ak--47/ga4-mixpanel
 cd ga4-mixpanel
 chmod +x deploy_cloud_run.sh
-npm run deploy:run # b
+npm run deploy:run
 ```
 then read [**setup**](#setup)
 
