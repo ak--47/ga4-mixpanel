@@ -56,6 +56,7 @@ let {
 	URL = "",
 	SET_INSERT_ID = true,
 	INSERT_ID_TUPLE = ["event_name", "user_pseudo_id", "event_timestamp"],
+	TIME_CONVERSION = "seconds"
 } = JSON_CONFIG;
 
 // LABELS
@@ -80,6 +81,8 @@ if (process.env.CONCURRENCY) CONCURRENCY = parseInt(process.env.CONCURRENCY);
 if (process.env.LATE) LATE = parseInt(process.env.LATE);
 if (process.env.LOOKBACK) LOOKBACK = parseInt(process.env.LOOKBACK);
 if (process.env.DAYS_AGO) DAYS_AGO = parseInt(process.env.DAYS_AGO);
+if (process.env.INSERT_ID_TUPLE) INSERT_ID_TUPLE = process.env.INSERT_ID_TUPLE.split(",");
+if (process.env.TIME_CONVERSION) TIME_CONVERSION = process.env.TIME_CONVERSION;
 let DATE = dayjs.utc().subtract(DAYS_AGO, "d").format("YYYYMMDD");
 if (process.env.DATE) DATE = dayjs(process.env.DATE.toString()).format("YYYYMMDD");
 let DATE_LABEL = dayjs.utc(DATE, "YYYYMMDD").format("YYYY-MM-DD");
@@ -122,6 +125,7 @@ const opts = {
 	vendorOpts: {
 		set_insert_id: SET_INSERT_ID,
 		insert_id_tuple: INSERT_ID_TUPLE,
+		time_conversion: "seconds"
 	}
 };
 
@@ -169,7 +173,8 @@ functions.http("go", async (req, res) => {
 				VERBOSE,
 				URL,
 				RUNTIME_URL,
-				ORIGINAL_URL
+				ORIGINAL_URL,
+				TIME_CONVERSION
 			}, "NOTICE");
 
 			if (URL) RUNTIME_URL = URL;
@@ -439,6 +444,8 @@ export function process_request_params(req) {
 	DATE = req.query.date ? dayjs(req.query.date.toString()).format("YYYYMMDD") : DATE;
 	TYPE = req.query.type ? req.query.type.toString() : TYPE;
 	URL = req.query.url ? req.query.url.toString() : URL;
+	TIME_CONVERSION = req.query.time_conversion ? req.query.time_conversion.toString() : TIME_CONVERSION;
+
 
 	//numbers
 	LOOKBACK = req.query.lookback ? parseInt(req.query.lookback.toString()) : LOOKBACK;

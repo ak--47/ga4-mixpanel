@@ -23,7 +23,7 @@
 		"ak-tools": "^1.0.47",
 		"dayjs": "^1.11.10",
 		"dotenv": "^16.3.1",
-		"mixpanel-import": "^2.5.29",
+		"mixpanel-import": "^2.5.30",
 		"p-limit": "^5.0.0"
 	},
 	"devDependencies": {
