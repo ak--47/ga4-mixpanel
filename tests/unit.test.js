@@ -159,7 +159,7 @@ describe("build_sql_query", () => {
     test("intraday", async () => {
         const query = await build_sql_query("my_dataset", "my_table", true);
 
-        expect(query).toBe(`SELECT * FROM \`my_dataset.events_intraday_*\`\nWHERE\n((TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), TIMESTAMP_MILLIS(CAST(event_timestamp / 1000 as INT64)), SECOND) <= 3660)\nOR\n(event_server_timestamp_offset > 90000000 AND TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), TIMESTAMP_MILLIS(CAST(event_timestamp / 1000 as INT64)), SECOND) <= 7200))`);
+        expect(query).toBe(`SELECT * FROM \`my_dataset.events_intraday_*\`\nWHERE\n((TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), TIMESTAMP_MILLIS(CAST(event_timestamp / 1000 as INT64)), SECOND) <= 3600)\nOR\n(event_server_timestamp_offset > 60000000 AND TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), TIMESTAMP_MILLIS(CAST(event_timestamp / 1000 as INT64)), SECOND) <= 7200))`);
     });
 
     test("full-day", async () => {

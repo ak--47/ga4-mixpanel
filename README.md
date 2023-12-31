@@ -1,17 +1,23 @@
-# 🏎  GA4 to Mixpanel
+# 🚛  GA4 to Mixpanel
 
-Take your Google Analytics 4 data from BigQuery and bring it into Mixpanel! 
+Take your Google Analytics 4 raw data from BigQuery to Mixpanel! No Code Required!
 
 By leveraging [GA4's BigQuery connector](https://support.google.com/analytics/answer/9358801?hl=en) and [Mixpanel's data ingestion APIs](https://developer.mixpanel.com/reference/overview), here is a free-to-use serverless service to move your data from GA4 to Mixpanel at scale.
 
 Intraday? Daily Tables? BOTH? You decide! 
 
+TLDR; 
+- [deploy](#🛠️-deploy) the connector in your own GCP instance
+- [trigger](#🌭-usage) your instance to run; fill in some [params](#🪷-params)
+- [schedule it](#🎻-orchestration) to run every hour (or once a day)
+- enjoy your GA4 data in Mixpanel! 
+
 
 ## 🛠️  Deploy
 
-the GA4 Mixpanel connector can be deploy as a Cloud Run or Cloud Function service. 
+the GA4 Mixpanel connector can be deployed in your own GCP instance as a [Cloud Run](https://cloud.google.com/run?hl=en) service or [Cloud Function](https://cloud.google.com/functions?hl=en) service. 
 
-choose whichever you are more comfortable with; the functionality is identical
+choose whichever type of deployment you are more comfortable with.
 
 
 - **One Click Deploy**
@@ -20,7 +26,7 @@ deploy this service to cloud run with a single click!
 
 [![Run on Google Cloud](https://deploy.cloud.run/button.svg)](https://deploy.cloud.run)
 
-^ you will be guided through a setup process where you will be prompted for your `BigQuery Dataset Id`, `Cloud Storage Bucket`, and `Mixpanel Token` 
+^ after confirming you trust the repository, you will be guided through a setup process where you will be prompted for your `BigQuery Dataset Id`, `Cloud Storage Bucket`, and `Mixpanel Token` 
 
 
 - **Google Cloud Functions**
@@ -51,9 +57,9 @@ then read [**setup**](#setup)
 
 ## 📝  Setup
 
-you will need to share the following values with you deployment:
+the GA4 Mixpanel connector requires you to share the following information:
 
-- `BQ_DATASET_ID` : the name of your [BigQuery dataset for GA4 data](https://support.google.com/analytics/answer/9358801?hl=en&ref_topic=9359001&sjid=71950933165448838-NA)... usually like: `analytics_123456789`
+- `BQ_DATASET_ID` : the name of your [BigQuery dataset holding  GA4 data](https://support.google.com/analytics/answer/9358801?hl=en&ref_topic=9359001&sjid=71950933165448838-NA)... usually `analytics_` with some numbers after : `analytics_123456789`
 - `GCS_BUCKET` : the name of the GCS bucket this service will use for temporary storage. [how to create a bucket](https://cloud.google.com/storage/docs/creating-buckets)
 - `MP_TOKEN` : your mixpanel project's token, which you can find in the [project settings](https://developer.mixpanel.com/reference/project-token)
 
@@ -71,6 +77,7 @@ BQ_DATASET_ID: "analytics_123456789"
 GCS_BUCKET: "mp_bucky"
 MP_TOKEN: "987654321"
 ```
+once you have setup your environment variables, redeploy the service
 
 - for `CONFIG.json` ... just modify the file in the repo and redeploy the service
 
@@ -87,7 +94,11 @@ there are more params you can set with env vars, json files, and even query stri
 
 ## 🌭  Usage
 
-After you deploy the service, you should receive a canonical URL by which you can call it.
+After you deploy the service, you should receive a **Service URL** issued by google which will trigger the connector:
+
+![cloud shell](https://aktunes.neocities.org/deployed.png)
+
+look for the `.run.app` suffix in the URL.
 
 If you call the service with a plain `GET` request with no params to the `/` endpoint:
 
@@ -95,7 +106,9 @@ If you call the service with a plain `GET` request with no params to the `/` end
 curl https://ga4-mixpanel-123456789-uc.a.run.app
 ```
 
-this will export the **last hour of data** from GA4's intraday tables to cloud storage and then import reach row of the table to your Mixpanel project as data points.
+this will export the **last hour of data** from GA4's intraday tables to your cloud storage bucket. then it will transform and load each of these flat files to Mixpanel. you'll be able to see the data in Mixpanel within a few minutes. and you can see the logs in the cloud console:
+
+
 
 if you turned intraday off in as a query param
 
@@ -215,7 +228,7 @@ The results of these queries are then exported to cloud storage as newline-delim
 
 6. **Scalability and Performance**: The service is designed to handle large volumes of data efficiently. It uses concurrency control and rate limiting to manage the data flow without overwhelming the Mixpanel API. The service can also be scaled up or down based on your requirements.
 
-7. **Security and Compliance**: The service adheres to best practices in terms of security and compliance, ensuring that your data is handled safely throughout the syncing process.
+7. **Security and Compliance**: The service adheres to best practices in terms of security and compliance. The service can only be called inside your own GCP instance and only moves data directly to Mixpanel's ingestion APIs, ensuring that your data is handled safely throughout the syncing process.
 
 8. **Customization and Flexibility**: You can customize various aspects of the service (like concurrency levels, lookback period, etc.) to suit your specific requirements, providing flexibility in how you sync your data.
 

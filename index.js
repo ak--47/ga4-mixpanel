@@ -2,7 +2,6 @@
  * GA4 to Mixpanel
  * purpose: sync GA4 events to Mixpanel; support intraday tables and backfilling
  * todo: group analytics
- * todo: one click deploys
  * by ak@mixpanel.com
  *
  *
@@ -54,7 +53,9 @@ let {
 	VERBOSE = false, // whether to log debug info
 	DAYS_AGO = 1, // how many days ago to sync for whole table
 	TYPE = "event", // event, user, group
-	URL = ""
+	URL = "",
+	SET_INSERT_ID = true,
+	INSERT_ID_TUPLE = ["event_name", "user_pseudo_id", "event_timestamp"],
 } = JSON_CONFIG;
 
 // LABELS
@@ -83,7 +84,9 @@ let DATE = dayjs.utc().subtract(DAYS_AGO, "d").format("YYYYMMDD");
 if (process.env.DATE) DATE = dayjs(process.env.DATE.toString()).format("YYYYMMDD");
 let DATE_LABEL = dayjs.utc(DATE, "YYYYMMDD").format("YYYY-MM-DD");
 
+
 if (process.env.INTRADAY) INTRADAY = strToBool(process.env.INTRADAY);
+if (process.env.SET_INSERT_ID) SET_INSERT_ID = strToBool(process.env.SET_INSERT_ID);
 if (process.env.VERBOSE) VERBOSE = strToBool(process.env.VERBOSE);
 
 // THESE NEED TO BE SET GLOBALLY
@@ -116,6 +119,10 @@ const opts = {
 	compress: false,
 	dryRun: false,
 	flattenData: true,
+	vendorOpts: {
+		set_insert_id: SET_INSERT_ID,
+		insert_id_tuple: INSERT_ID_TUPLE,
+	}
 };
 
 
@@ -421,12 +428,14 @@ these are covered by unit tests
 ----
 */
 
+// THIS IS ALL SIDE EFFECTS
 export function process_request_params(req) {
 	//strings
 	BQ_TABLE_ID = req.query.table?.toString() || BQ_TABLE_ID;
 	BQ_DATASET_ID = req.query.dataset?.toString() || BQ_DATASET_ID;
 	GCS_BUCKET = req.query.bucket?.toString() || GCS_BUCKET;
 	MP_TOKEN = req.query.token?.toString() || MP_TOKEN;
+	MP_SECRET = req.query.secret?.toString() || MP_SECRET;
 	DATE = req.query.date ? dayjs(req.query.date.toString()).format("YYYYMMDD") : DATE;
 	TYPE = req.query.type ? req.query.type.toString() : TYPE;
 	URL = req.query.url ? req.query.url.toString() : URL;
@@ -440,9 +449,15 @@ export function process_request_params(req) {
 
 	//switches
 	INTRADAY = !isNil(req.query.intraday) ? strToBool(req.query.intraday) : INTRADAY;
+	VERBOSE = !isNil(req.query.verbose) ? strToBool(req.query.verbose) : VERBOSE;
+	SET_INSERT_ID = !isNil(req.query.set_insert_id) ? strToBool(req.query.set_insert_id) : SET_INSERT_ID;
+
+	// if the user specifies a date, we assume they want a full day
 	if (req.query.date) INTRADAY = false;
 
-	if (!MP_TOKEN && !MP_SECRET) throw new Error("MP_TOKEN or MP_SECRET is required");
+	if (!MP_TOKEN && !MP_SECRET) throw new Error("mixpanel 'token'' or 'secret' is required");
+	if (!GCS_BUCKET) throw new Error("google cloud 'bucket' is required");
+	if (!BQ_DATASET_ID) throw new Error("bigquery 'dataset' is required");
 	if (!BQ_TABLE_ID) BQ_TABLE_ID = `events_${DATE}`; //date = today if not specified
 	if (MP_TOKEN) creds.token = MP_TOKEN;
 
@@ -568,13 +583,13 @@ export async function build_sql_query(BQ_DATASET_ID, TABLE_ID, intraday = false,
 	// intraday events
 	// events in the last lookBackWindow (seconds)
 	if (intraday) {
-		query += `((TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), TIMESTAMP_MILLIS(CAST(event_timestamp / 1000 as INT64)), SECOND) <= ${lookBackWindow + 60})`;
+		query += `((TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), TIMESTAMP_MILLIS(CAST(event_timestamp / 1000 as INT64)), SECOND) <= ${lookBackWindow})`;
 		query += `\nOR\n`;
 	}
 
 	// events that are late (seconds)
 	if (intraday) {
-		query += `(event_server_timestamp_offset > ${(late + 30) * 1000000} AND TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), TIMESTAMP_MILLIS(CAST(event_timestamp / 1000 as INT64)), SECOND) <= ${lookBackWindow * 2}))`;
+		query += `(event_server_timestamp_offset > ${late * 1000000} AND TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), TIMESTAMP_MILLIS(CAST(event_timestamp / 1000 as INT64)), SECOND) <= ${lookBackWindow * 2}))`;
 	}
 
 	return Promise.resolve(query);

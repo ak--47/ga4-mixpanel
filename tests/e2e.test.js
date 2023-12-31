@@ -71,7 +71,7 @@ describe("Cloud Function E2E Tests", () => {
 			const response = await fetch(url + qs);
 			const json = await response.json();
 			expect(response.status).toBe(500);
-			expect(json.error).toBe("MP_TOKEN or MP_SECRET is required");
+			expect(json.error).toBe("mixpanel 'token'' or 'secret' is required");
 		},
 		LONG_TIMEOUT
 	);
@@ -83,7 +83,19 @@ describe("Cloud Function E2E Tests", () => {
 			const response = await fetch(url + qs);
 			const json = await response.json();
 			expect(response.status).toBe(500);
-			expect(json.error).toBe(`Table \"events_intraday_*\" must be qualified with a dataset (e.g. dataset.table).`);
+			expect(json.error).toBe("google cloud 'bucket' is required");
+		},
+		LONG_TIMEOUT
+	);
+
+	test(
+		"TOKEN + BUCKET",
+		async () => {
+			qs = `?token=${MP_TOKEN}&bucket=${GCS_BUCKET}`;
+			const response = await fetch(url + qs);
+			const json = await response.json();
+			expect(response.status).toBe(500);
+			expect(json.error).toBe("bigquery 'dataset' is required");
 		},
 		LONG_TIMEOUT
 	);

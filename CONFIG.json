@@ -11,7 +11,9 @@
     "LATE": 60,
     "LOOKBACK": 3600,
     "INTRADAY": true,
+	"SET_INSERT_ID": true,
 	"VERBOSE": false,
 	"DAYS_AGO": 2,
 	"TYPE": "event"
+	
 }
