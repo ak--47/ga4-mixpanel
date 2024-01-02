@@ -20,9 +20,12 @@ runner.mjs
 .env.tests
 .gitattributes
 recon.js
-tests
+tests/*
 .prettierrc
 app.json
-deploy.sh
+deploy_cloud_functions.sh
+deploy_cloud_run.sh
 package-lock.json
 README.md
+coverage/*
+.prettierrc

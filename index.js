@@ -55,7 +55,7 @@ let {
 	TYPE = "event", // event, user, group
 	URL = "",
 	SET_INSERT_ID = true,
-	INSERT_ID_TUPLE = ["event_name", "user_pseudo_id", "event_timestamp"],
+	INSERT_ID_TUPLE = ["event_name", "user_pseudo_id", "event_bundle_sequence_id"],
 	TIME_CONVERSION = "seconds"
 } = JSON_CONFIG;
 
@@ -133,15 +133,6 @@ const opts = {
 // ENTRY POINT
 functions.http("go", async (req, res) => {
 
-	// Re-construct the full URL so the service can call itself
-	let protocol = req.protocol || 'http';
-	let host = req.get('host');
-	let forwardedPath = req.get('X-Forwarded-Path') || ''; // Adjust header key if necessary
-	let path = forwardedPath || req.path;
-	RUNTIME_URL = `${protocol}://${host}${path}`;
-	let ORIGINAL_URL = req.originalUrl; // This is the full URL, including query string
-
-
 	try {
 		// PROCESS PARAMS
 		const queryString = process_request_params(req);
@@ -173,10 +164,12 @@ functions.http("go", async (req, res) => {
 				VERBOSE,
 				URL,
 				RUNTIME_URL,
-				ORIGINAL_URL,
-				TIME_CONVERSION
+				TIME_CONVERSION,
+				INSERT_ID_TUPLE,
+				SET_INSERT_ID
 			}, "NOTICE");
 
+			//allow for runtime url to be passed in
 			if (URL) RUNTIME_URL = URL;
 
 			const importTasks = await EXTRACT_GET(INTRADAY, queryString);
@@ -435,6 +428,28 @@ these are covered by unit tests
 
 // THIS IS ALL SIDE EFFECTS
 export function process_request_params(req) {
+	//URL
+	// for cloud run
+	const protocol = req.protocol || 'http';
+	const host = req.get('host');
+	const forwardedPath = req.get('X-Forwarded-Path') || ''; // Adjust header key if necessary
+	const path = forwardedPath || req.path;
+
+	//for cloud functions
+	const functionName = process.env.FUNCTION_NAME || process.env.K_SERVICE;
+	const region = process.env.FUNCTION_REGION; // Optionally, you can get the region too
+	const project = process.env.GCP_PROJECT; // Project ID is also available as an environment variable
+
+	const isCloudFunction = !!process.env.FUNCTION_NAME || !!process.env.FUNCTION_TARGET;
+
+	if (isCloudFunction) {
+		RUNTIME_URL = `${protocol}://${region}-${project}.cloudfunctions.net/${functionName}`;
+	}
+	else {
+		RUNTIME_URL = `${protocol}://${host}${path}`;
+	}
+
+
 	//strings
 	BQ_TABLE_ID = req.query.table?.toString() || BQ_TABLE_ID;
 	BQ_DATASET_ID = req.query.dataset?.toString() || BQ_DATASET_ID;
@@ -519,7 +534,7 @@ export async function build_request(client, uri, queryString = "") {
 				"Content-Type": "application/json",
 			},
 			retryConfig: {
-				retry: 15,
+				retry: 5,
 				statusCodesToRetry: [
 					[100, 199],
 					[400, 499],

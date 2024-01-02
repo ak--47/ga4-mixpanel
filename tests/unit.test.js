@@ -12,6 +12,7 @@ import utc from "dayjs/plugin/utc.js";
 dayjs.extend(utc);
 const LONG_TIMEOUT = 1000 * 60 * 5; // 5 minutes
 
+
 // import dotenv from "dotenv";
 // dotenv.config({ override: true, path: ".env.tests" });
 // let { BQ_DATASET_ID, BQ_TABLE_ID, GCS_BUCKET, MP_TOKEN, INTRADAY, NUM_ROWS, MP_SECRET } = process.env;
@@ -142,7 +143,8 @@ describe("process req params", () => {
 				bucket: "newGCSBucket",
 				token: "newMPToken",
 				date: "20210101"
-			}
+			},
+			get: () => { 'localhost'; }
 		};
 
 		const queryString = process_request_params(mockReq);
@@ -156,28 +158,30 @@ describe("process req params", () => {
 
 
 describe("build_sql_query", () => {
-    test("intraday", async () => {
-        const query = await build_sql_query("my_dataset", "my_table", true);
+	test("intraday", async () => {
+		const query = await build_sql_query("my_dataset", "my_table", true);
 
-        expect(query).toBe(`SELECT * FROM \`my_dataset.events_intraday_*\`\nWHERE\n((TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), TIMESTAMP_MILLIS(CAST(event_timestamp / 1000 as INT64)), SECOND) <= 3600)\nOR\n(event_server_timestamp_offset > 60000000 AND TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), TIMESTAMP_MILLIS(CAST(event_timestamp / 1000 as INT64)), SECOND) <= 7200))`);
-    });
+		expect(query).toBe(`SELECT * FROM \`my_dataset.events_intraday_*\`\nWHERE\n((TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), TIMESTAMP_MILLIS(CAST(event_timestamp / 1000 as INT64)), SECOND) <= 3600)\nOR\n(event_server_timestamp_offset > 60000000 AND TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), TIMESTAMP_MILLIS(CAST(event_timestamp / 1000 as INT64)), SECOND) <= 7200))`);
+	});
 
-    test("full-day", async () => {
-        const query = await build_sql_query("my_dataset", "my_table");
+	test("full-day", async () => {
+		const query = await build_sql_query("my_dataset", "my_table");
 
-        expect(query).toBe("SELECT * FROM `my_dataset.my_table`");
-    });
+		expect(query).toBe("SELECT * FROM `my_dataset.my_table`");
+	});
 
-    test("user properties", async () => {
-        const query = await build_sql_query("my_dataset", "my_table", false, 3600, 60, "user");
+	test("user properties", async () => {
+		const query = await build_sql_query("my_dataset", "my_table", false, 3600, 60, "user");
 
-        expect(query).toBe("SELECT * FROM `my_dataset.my_table`\nWHERE\n(user_properties IS NOT NULL)");
-    });
+		expect(query).toBe("SELECT * FROM `my_dataset.my_table`\nWHERE\n(user_properties IS NOT NULL)");
+	});
 
-    test("custom sql", async () => {
-        const customSQL = "SELECT user_id, event_name";
-        const query = await build_sql_query("my_dataset", "my_table", false, 3600, 60, "event", customSQL);
+	test("custom sql", async () => {
+		const customSQL = "SELECT user_id, event_name";
+		const query = await build_sql_query("my_dataset", "my_table", false, 3600, 60, "event", customSQL);
 
-        expect(query).toBe("SELECT user_id, event_name FROM `my_dataset.my_table`");
-    });
+		expect(query).toBe("SELECT user_id, event_name FROM `my_dataset.my_table`");
+	});
 });
+
+

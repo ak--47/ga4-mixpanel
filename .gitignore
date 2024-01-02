@@ -21,7 +21,7 @@ yarn-error.log
 .DS_Store
 .env.tests
 
-/testData
+/tests/testData
 /coverage/*
 !/coverage/.gitkeep
 
