@@ -84,8 +84,8 @@ if (process.env.DAYS_AGO) DAYS_AGO = parseInt(process.env.DAYS_AGO);
 if (process.env.INSERT_ID_TUPLE) INSERT_ID_TUPLE = process.env.INSERT_ID_TUPLE.split(",");
 if (process.env.TIME_CONVERSION) TIME_CONVERSION = process.env.TIME_CONVERSION;
 let DATE = dayjs.utc().subtract(DAYS_AGO, "d").format("YYYYMMDD");
-if (process.env.DATE) DATE = dayjs(process.env.DATE.toString()).format("YYYYMMDD");
 let DATE_LABEL = dayjs.utc(DATE, "YYYYMMDD").format("YYYY-MM-DD");
+// if (process.env.DATE) DATE = dayjs(process.env.DATE.toString()).format("YYYYMMDD");
 
 
 if (process.env.INTRADAY) INTRADAY = strToBool(process.env.INTRADAY);
@@ -441,7 +441,7 @@ export function process_request_params(req) {
 	const functionName = process.env.FUNCTION_NAME || process.env.K_SERVICE;
 	//edit: these do not work...
 	const region = process.env.REGION; // Optionally, you can get the region too
-	const project = process.env.PROJECT; // Project ID is also available as an environment variable
+	const project = process.env.GCLOUD_PROJECT; // Project ID is also available as an environment variable
 
 	const isCloudFunction = !!process.env.FUNCTION_NAME || !!process.env.FUNCTION_TARGET;
 
@@ -475,8 +475,8 @@ export function process_request_params(req) {
 	DAYS_AGO = req.query.days_ago ? parseInt(req.query.days_ago.toString()) : DAYS_AGO;
 	if (req.query.days_ago) DATE = dayjs.utc().subtract(DAYS_AGO, "d").format("YYYYMMDD");
 	if (!req.query.days_ago && !req.query.date) {
-		DAYS_AGO = null;
-		DATE = "";
+		//DAYS_AGO = null;
+		//DATE = "";
 	}
 
 
