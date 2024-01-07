@@ -136,6 +136,7 @@ functions.http("go", async (req, res) => {
 	try {
 		// PROCESS PARAMS
 		const queryString = process_request_params(req);
+
 		// EXTRACT DATA
 		if (req.method === "GET") {
 			//having a 'DATE' and 'INTRADAY' is not supported
@@ -145,6 +146,7 @@ functions.http("go", async (req, res) => {
 			fileName = `${TYPE}-`.concat(fileName);
 			if (INTRADAY) fileName = `intraday-`.concat(fileName);
 			if (!INTRADAY) fileName = `${DATE}-`.concat(fileName);
+			DATE_LABEL = dayjs.utc(DATE, "YYYYMMDD").format("YYYY-MM-DD");
 
 			const watch = timer("SYNC");
 			watch.start();
@@ -468,6 +470,11 @@ export function process_request_params(req) {
 	CONCURRENCY = req.query.concurrency ? parseInt(req.query.concurrency.toString()) : CONCURRENCY;
 	DAYS_AGO = req.query.days_ago ? parseInt(req.query.days_ago.toString()) : DAYS_AGO;
 	if (req.query.days_ago) DATE = dayjs.utc().subtract(DAYS_AGO, "d").format("YYYYMMDD");
+	if (!req.query.days_ago && !req.query.date) {
+		DAYS_AGO = null;
+		DATE = "";
+	}
+
 
 	//switches
 	INTRADAY = !isNil(req.query.intraday) ? strToBool(req.query.intraday) : INTRADAY;
