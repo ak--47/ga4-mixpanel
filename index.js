@@ -439,16 +439,19 @@ export function process_request_params(req) {
 
 	//for cloud functions
 	const functionName = process.env.FUNCTION_NAME || process.env.K_SERVICE;
-	const region = process.env.FUNCTION_REGION; // Optionally, you can get the region too
-	const project = process.env.GCP_PROJECT; // Project ID is also available as an environment variable
+	//edit: these do not work...
+	const region = process.env.REGION; // Optionally, you can get the region too
+	const project = process.env.PROJECT; // Project ID is also available as an environment variable
 
 	const isCloudFunction = !!process.env.FUNCTION_NAME || !!process.env.FUNCTION_TARGET;
 
-	if (isCloudFunction) {
-		RUNTIME_URL = `${protocol}://${region}-${project}.cloudfunctions.net/${functionName}`;
-	}
-	else {
-		RUNTIME_URL = `${protocol}://${host}${path}`;
+	if (!URL) {
+		if (isCloudFunction) {
+			RUNTIME_URL = `${protocol}://${region}-${project}.cloudfunctions.net/${functionName}`;
+		}
+		else {
+			RUNTIME_URL = `${protocol}://${host}${path}`;
+		}
 	}
 
 
@@ -461,6 +464,7 @@ export function process_request_params(req) {
 	DATE = req.query.date ? dayjs(req.query.date.toString()).format("YYYYMMDD") : DATE;
 	TYPE = req.query.type ? req.query.type.toString() : TYPE;
 	URL = req.query.url ? req.query.url.toString() : URL;
+	if (URL) RUNTIME_URL = URL;
 	TIME_CONVERSION = req.query.time_conversion ? req.query.time_conversion.toString() : TIME_CONVERSION;
 
 
