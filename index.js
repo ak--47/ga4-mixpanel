@@ -220,7 +220,7 @@ functions.http("go", async (req, res) => {
 		res.status(400).send("Bad Request; expecting GET to extract or POST with file to load or DELETE to delete all files");
 		return;
 	} catch (err) {
-		write.log(`${LOG_LABEL} → JOB FAIL`, { path: req.path, method: req.method, params: req.params, body: req.body, err : err.message, stack : err.stack }, "CRITICAL");
+		write.log(`${LOG_LABEL} → JOB FAIL`, { path: req.path, method: req.method, params: req.params, body: req.body, err: err.message, stack: err.stack }, "CRITICAL");
 		res.status(500).send({ error: err.message }); // Send back a JSON error message
 	}
 });
@@ -230,7 +230,6 @@ functions.http("go", async (req, res) => {
 /*
 ----
 CORE API
-these are covered by e2e tests
 ----
 */
 
@@ -321,8 +320,7 @@ export async function BACKFILL_PATCH() {
 
 /*
 ----
-BUSINESS LOGIC
-these are largely untested
+CLOUD LOGIC
 ----
 */
 
@@ -378,7 +376,6 @@ async function exportToStorage(destinationTable) {
 	const [files] = await storage.bucket(GCS_BUCKET).getFiles({ prefix: fileName });
 	return files.map((file) => `gs://${GCS_BUCKET}/${file.name}`);
 }
-
 
 
 export async function storage_to_mixpanel(filePath) {
@@ -457,7 +454,6 @@ export async function spawn_file_workers(uris, queryString = "") {
 /*
 ----
 HELPERS
-these are covered by unit tests
 ----
 */
 
@@ -487,6 +483,13 @@ export function process_request_params(req) {
 		}
 	}
 
+	//GET THE DATE RIGHT
+	if (req.query.date) {
+		INTRADAY = false;
+		DAYS_AGO = 0;
+		DATE = dayjs(req.query.date.toString()).format("YYYYMMDD");
+	}
+
 
 	//strings
 	BQ_TABLE_ID = req.query.table?.toString() || BQ_TABLE_ID;
@@ -495,7 +498,6 @@ export function process_request_params(req) {
 	MP_TOKEN = req.query.token?.toString() || MP_TOKEN;
 	MP_SECRET = req.query.secret?.toString() || MP_SECRET;
 	GCP_PROJECT = req.query.project?.toString() || GCP_PROJECT;
-	DATE = req.query.date ? dayjs(req.query.date.toString()).format("YYYYMMDD") : dayjs.utc().format("YYYYMMDD");
 	TYPE = req.query.type ? req.query.type.toString() : TYPE;
 	URL = req.query.url ? req.query.url.toString() : URL;
 	if (URL) RUNTIME_URL = URL;
@@ -506,17 +508,27 @@ export function process_request_params(req) {
 	LOOKBACK = req.query.lookback ? parseInt(req.query.lookback.toString()) : LOOKBACK;
 	LATE = req.query.late ? parseInt(req.query.late.toString()) : LATE;
 	CONCURRENCY = req.query.concurrency ? parseInt(req.query.concurrency.toString()) : CONCURRENCY;
-	DAYS_AGO = req.query.days_ago ? parseInt(req.query.days_ago.toString()) : DAYS_AGO;
-	if (req.query.days_ago) DATE = dayjs.utc().subtract(DAYS_AGO, "d").format("YYYYMMDD");
+
+	if (!req.query.date) {
+		if (req.query.days_ago) {
+			DAYS_AGO = req.query.days_ago ? parseInt(req.query.days_ago.toString()) : DAYS_AGO;
+			DATE = dayjs.utc().subtract(DAYS_AGO, "d").format("YYYYMMDD");
+			INTRADAY = false;
+		}
+
+		else {
+			INTRADAY = true;
+		}
+				
+		
+	}
 
 
-	//switches
-	INTRADAY = !isNil(req.query.intraday) ? toBool(req.query.intraday) : INTRADAY;
+	//switches	
 	VERBOSE = !isNil(req.query.verbose) ? toBool(req.query.verbose) : VERBOSE;
 	SET_INSERT_ID = !isNil(req.query.set_insert_id) ? toBool(req.query.set_insert_id) : SET_INSERT_ID;
+	// INTRADAY = !isNil(req.query.intraday) ? toBool(req.query.intraday) : INTRADAY;
 
-	// if the user specifies a date, we assume they want a full day
-	if (req.query.date) INTRADAY = false;
 	if (INTRADAY) LOG_LABEL = `INTRADAY`;
 	if (!INTRADAY) LOG_LABEL = dayjs.utc(DATE, "YYYYMMDD").format("YYYY-MM-DD");
 
@@ -527,10 +539,13 @@ export function process_request_params(req) {
 	if (!BQ_TABLE_ID) BQ_TABLE_ID = `events_${DATE}`; //date = today if not specified
 	if (MP_TOKEN) creds.token = MP_TOKEN;
 
-
+	
 	//return fully constructed query params
 	// Initialize an object to hold parameters
 	let params = {};
+
+	// this would be a place to create a job id if needed
+	// if (!req.query.job_id) params.job_id = uid();
 
 	// Loop through req.query and populate the params object
 	for (const key in req.query) {
