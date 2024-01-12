@@ -1,5 +1,6 @@
 {
-    "BQ_DATASET_ID": "",
+	"GCP_PROJECT": "",
+	"BQ_DATASET_ID": "",
     "BQ_TABLE_ID": "",
     "GCS_BUCKET": "",
     "MP_TOKEN": "",

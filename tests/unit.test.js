@@ -2,7 +2,6 @@
 import { BigQuery } from "@google-cloud/bigquery";
 import { Storage } from "@google-cloud/storage";
 import {
-	strToBool,
 	aggregateImportResults,
 	process_request_params,
 	build_sql_query
@@ -28,57 +27,6 @@ const LONG_TIMEOUT = 1000 * 60 * 5; // 5 minutes
 
 
 
-describe('string to bool', () => {
-	test('"true"', () => {
-		expect(strToBool('true')).toBe(true);
-	});
-
-	test('"yes"', () => {
-		expect(strToBool('yes')).toBe(true);
-	});
-
-	test('"1"', () => {
-		expect(strToBool('1')).toBe(true);
-	});
-
-	test('"false"', () => {
-		expect(strToBool('false')).toBe(false);
-	});
-
-	test('"no"', () => {
-		expect(strToBool('no')).toBe(false);
-	});
-
-	test('"0"', () => {
-		expect(strToBool('0')).toBe(false);
-	});
-
-	test('empty string', () => {
-		expect(strToBool('')).toBe(false);
-	});
-
-	test('non-string', () => {
-		expect(strToBool(null)).toBe(false);
-		expect(strToBool(undefined)).toBe(false);
-		expect(strToBool(0)).toBe(false);
-		expect(strToBool(1)).toBe(true);
-	});
-
-	test('whitespace', () => {
-		expect(strToBool('  true  ')).toBe(true);
-	});
-
-	test('mix case', () => {
-		expect(strToBool('TrUe')).toBe(true);
-		expect(strToBool('FaLsE')).toBe(false);
-	});
-
-	test('non-empty', () => {
-		expect(strToBool('hello')).toBe(true);
-		expect(strToBool('123')).toBe(true);
-	});
-
-});
 
 describe('summarize', () => {
 	test('empty', () => {
