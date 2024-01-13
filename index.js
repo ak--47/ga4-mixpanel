@@ -391,8 +391,8 @@ export async function storage_to_mixpanel(filePath) {
 		const dateLabel = dayjs.utc(date, "YYYYMMDD").format("YYYY-MM-DD");
 
 		// return await benchmark(data);
-		opts.verbose = true
-		opts.dryRun = false
+		// opts.verbose = true
+		// opts.dryRun = false
 
 		// @ts-ignore
 		opts.recordType = recordType;
