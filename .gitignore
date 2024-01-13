@@ -25,3 +25,5 @@ yarn-error.log
 /coverage/*
 !/coverage/.gitkeep
 
+trigger.sh
+

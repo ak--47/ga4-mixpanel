@@ -17,7 +17,7 @@ import { GoogleAuth } from "google-auth-library";
 // LOCAL DEPS
 import Mixpanel from "mixpanel-import";
 import pLimit from "p-limit";
-import { parseGCSUri, timer, isNil, sleep, toBool, logger, uid } from "ak-tools";
+import { parseGCSUri, timer, isNil, sleep, toBool, logger, uid, progress, comma, bytesHuman } from "ak-tools";
 import dayjs from "dayjs";
 import utc from "dayjs/plugin/utc.js";
 dayjs.extend(utc);
@@ -390,6 +390,10 @@ export async function storage_to_mixpanel(filePath) {
 		const [date, recordType] = file.split("-");
 		const dateLabel = dayjs.utc(date, "YYYYMMDD").format("YYYY-MM-DD");
 
+		// return await benchmark(data);
+		opts.verbose = true
+		opts.dryRun = false
+
 		// @ts-ignore
 		opts.recordType = recordType;
 
@@ -519,8 +523,8 @@ export function process_request_params(req) {
 		else {
 			INTRADAY = true;
 		}
-				
-		
+
+
 	}
 
 
@@ -539,7 +543,7 @@ export function process_request_params(req) {
 	if (!BQ_TABLE_ID) BQ_TABLE_ID = `events_${DATE}`; //date = today if not specified
 	if (MP_TOKEN) creds.token = MP_TOKEN;
 
-	
+
 	//return fully constructed query params
 	// Initialize an object to hold parameters
 	let params = {};
@@ -754,4 +758,57 @@ export function aggregateImportResults(results) {
 	// ... average other properties as needed
 
 	return summary;
+}
+
+/**
+ * @param  {import('@google-cloud/storage').File} data
+ */
+async function benchmark(data) {
+	const consume = timer("consume");	
+	const stream = data.createReadStream({decompress: true, validation: 'crc32c'});
+	let totalBytes = 0;
+	let chunks = 0;
+	let avgSize = 0;
+
+	const streamPromise = new Promise((resolve, reject) => {
+		consume.start();
+
+		stream
+			.on("data", (data) => {
+				chunks++;
+				totalBytes += data.length;
+				avgSize = totalBytes / chunks; // Update average size
+				avgSize = Math.round(avgSize); // Round to nearest integer
+
+				// Optional: Display progress
+				progress(`chunks: ${comma(chunks)} | avgSize: ${bytesHuman(avgSize)} | totalBytes: ${bytesHuman(totalBytes)}`);
+			})
+			.on("end", () => {
+				const duration = consume.end(); // Duration in seconds
+				const throughput = (totalBytes / (1024 * 1024)) / (consume.delta / 1000); // Throughput in MB/s
+
+				console.log(`\n\ntotal duration: ${duration}`);				
+				console.log(`Total chunks: ${comma(chunks)}`);
+				console.log(`Total bytes: ${bytesHuman(totalBytes)}`);
+				console.log(`Average chunk size: ${bytesHuman(avgSize)} bytes`);
+				console.log(`Throughput: ${throughput.toFixed(2)} MB/s`);
+				debugger;
+				resolve({ duration, throughput });
+			})
+			.on("error", (error) => {
+				consume.end();
+				reject(error);
+			});
+	});
+
+	try {
+		console.log("Stream start\n");
+		await streamPromise;
+		console.log("\nStream end\n");
+	} catch (error) {
+		console.error("Stream encountered an error:", error);
+	}
+
+	// process.exit(0);
+	return streamPromise;
 }
