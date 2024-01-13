@@ -220,7 +220,7 @@ functions.http("go", async (req, res) => {
 		res.status(400).send("Bad Request; expecting GET to extract or POST with file to load or DELETE to delete all files");
 		return;
 	} catch (err) {
-		write.log(`${LOG_LABEL} → JOB FAIL`, { path: req.path, method: req.method, params: req.params, body: req.body, err: err.message, stack: err.stack }, "CRITICAL");
+		write.log(`${LOG_LABEL} → REQUEST FAIL`, { path: req.path, method: req.method, params: req.params, body: req.body, err: err.message, stack: err.stack }, "CRITICAL");
 		res.status(500).send({ error: err.message }); // Send back a JSON error message
 	}
 });
@@ -254,13 +254,13 @@ export async function EXTRACT_GET(INTRADAY = true, queryString = "") {
 export async function LOAD_POST(file) {
 	const watch = timer("LOAD");
 	watch.start();
-	const fileLabel = parseGCSUri(file).file?.split('0')?.[1];
+	const fileLabel = parseGCSUri(file).file?.split('-')?.slice()?.pop() || file;
 	try {
 		const importJob = await storage_to_mixpanel(file);
-		if (VERBOSE) write.log(`${LOG_LABEL} → ${fileLabel} SUCCESS: ${watch.end()}`, importJob, "DEBUG");
+		if (VERBOSE) write.log(`${LOG_LABEL} → ${fileLabel} | SUCCESS: ${watch.end()}`, importJob, "DEBUG");
 		return importJob;
 	} catch (error) {
-		write.log(`${LOG_LABEL} → ${fileLabel} FAIL: ${watch.end()}`, { message: error.message, stack: error.stack }, "ERROR");
+		write.log(`${LOG_LABEL} → ${fileLabel} | FAIL: ${watch.end()}`, { message: error.message, stack: error.stack }, "ERROR");
 		return {};
 	}
 }
