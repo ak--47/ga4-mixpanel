@@ -148,7 +148,7 @@ describe("Cloud Function E2E Tests", () => {
 	test(
 		"MVP (intraday)",
 		async () => {
-			qs = `?type=event&token=${MP_TOKEN}&secret=${MP_SECRET}&dataset=${BQ_DATASET_ID}&table=${BQ_TABLE_ID}&bucket=${GCS_BUCKET}&intraday=true&project=${GCP_PROJECT}`;
+			qs = `?type=event&token=${MP_TOKEN}&secret=${MP_SECRET}&dataset=${BQ_DATASET_ID}&bucket=${GCS_BUCKET}&intraday=true&project=${GCP_PROJECT}`;
 			const response = await fetch(url + qs);
 			const job = await response.json();
 			expect(response.status).toBe(200);

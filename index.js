@@ -567,8 +567,14 @@ export function process_request_params(req) {
 	//VALIDATION
 	if (!MP_TOKEN && !MP_SECRET) throw new Error("mixpanel 'token'' or 'secret' is required");
 	if (!GCS_BUCKET) throw new Error("google cloud 'bucket' is required");
-	if (!BQ_DATASET_ID) throw new Error("bigquery 'dataset' is required");
-	if (!BQ_TABLE_ID) throw new Error("bigquery 'table' is required");
+	
+	if (req.method === "POST" && !req.body.file) throw new Error("POST request must include a file");
+	if (req.method === "GET") {			
+		if (!BQ_DATASET_ID) throw new Error("bigquery 'dataset' is required");
+		if (!BQ_TABLE_ID) throw new Error("bigquery 'table' is required");
+	}
+
+
 
 
 	//return fully constructed query params
