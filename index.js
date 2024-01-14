@@ -382,45 +382,60 @@ export async function storage_to_mixpanel(filePath) {
 	const { bucket, file } = parseGCSUri(filePath);
 	const data = await storage.bucket(bucket).file(file);
 
+
+	const watch = timer("file");
+	watch.start();
+
 	try {
-		const watch = timer("file");
-		watch.start();
 		await checkFileExists(data, filePath);
+	}
+	catch (error) {
+		write.log(`${LOG_LABEL} → FILE NOT FOUND: ${filePath}`, { message: error.message, stack: error.stack }, "ERROR");
+		throw error;
+	}
 
-		const [date, recordType] = file.split("-");
-		const dateLabel = dayjs.utc(date, "YYYYMMDD").format("YYYY-MM-DD");
+	const [date, recordType] = file.split("-");
+	const dateLabel = dayjs.utc(date, "YYYYMMDD").format("YYYY-MM-DD");
 
-		// return await benchmark(data);
-		// opts.verbose = true
-		// opts.dryRun = false
+	// return await benchmark(data);
 
-		// @ts-ignore
-		opts.recordType = recordType;
 
-		if (opts.recordType === "event") {
-			if (filePath.includes("intraday")) opts.tags = { import_type: "intraday" };
-			if (!filePath.includes("intraday")) opts.tags = { import_type: `daily: ${dateLabel || ""}` };
-		}
+	// @ts-ignore
+	opts.recordType = recordType;
 
-		if (opts.recordType === "user") {
-			opts.dedupe = true;
-			opts.abridged = false;
-			opts.transformFunc = (data) => {
-				data["$token"] = MP_TOKEN;
-				return data;
-			};
-		}
+	if (opts.recordType === "event") {
+		if (filePath.includes("intraday")) opts.tags = { import_type: "intraday" };
+		if (!filePath.includes("intraday")) opts.tags = { import_type: `daily: ${dateLabel || ""}` };
+	}
 
+	if (opts.recordType === "user") {
+		opts.dedupe = true;
+		opts.abridged = false;
+		opts.transformFunc = (data) => {
+			data["$token"] = MP_TOKEN;
+			return data;
+		};
+	}
+	let result;
+	try {
 		// Pass the file to Mixpanel
-		const result = await Mixpanel(creds, data.createReadStream({ decompress: true }), opts);
+		result = await Mixpanel(creds, data.createReadStream({ decompress: true }), opts);
+	}
 
+	catch (error) {
+		write.log(`${LOG_LABEL} → MIXPANEL ERROR: ${filePath}`, { file, message: error.message, stack: error.stack }, "ERROR");
+		return {};
+	}
+
+	try {
 		// Delete the file from GCS
 		await data.delete();
 		return result;
+	}
 
-	} catch (error) {
-		write.log(`${LOG_LABEL} → Mixpanel Error: ${filePath}`, { file, message: error.message, stack: error.stack }, "ERROR");
-		throw error;
+	catch (error) {
+		write.log(`${LOG_LABEL} → DELETE ERROR: ${filePath}`, { file, message: error.message, stack: error.stack }, "ERROR");
+		return result;
 	}
 }
 
@@ -487,13 +502,6 @@ export function process_request_params(req) {
 		}
 	}
 
-	//GET THE DATE RIGHT
-	if (req.query.date) {
-		INTRADAY = false;
-		DAYS_AGO = 0;
-		DATE = dayjs(req.query.date.toString()).format("YYYYMMDD");
-	}
-
 
 	//strings
 	BQ_TABLE_ID = req.query.table?.toString() || BQ_TABLE_ID;
@@ -513,30 +521,37 @@ export function process_request_params(req) {
 	LATE = req.query.late ? parseInt(req.query.late.toString()) : LATE;
 	CONCURRENCY = req.query.concurrency ? parseInt(req.query.concurrency.toString()) : CONCURRENCY;
 
-	if (!req.query.date) {
-		if (req.query.days_ago) {
-			DAYS_AGO = req.query.days_ago ? parseInt(req.query.days_ago.toString()) : DAYS_AGO;
-			DATE = dayjs.utc().subtract(DAYS_AGO, "d").format("YYYYMMDD");
-			INTRADAY = false;
-		}
-
-		else {
-			INTRADAY = true;
-		}
-
-
-	}
-
 
 	//switches	
 	VERBOSE = !isNil(req.query.verbose) ? toBool(req.query.verbose) : VERBOSE;
 	SET_INSERT_ID = !isNil(req.query.set_insert_id) ? toBool(req.query.set_insert_id) : SET_INSERT_ID;
-	// INTRADAY = !isNil(req.query.intraday) ? toBool(req.query.intraday) : INTRADAY;
-
-	if (INTRADAY) LOG_LABEL = `INTRADAY`;
-	if (!INTRADAY) LOG_LABEL = dayjs.utc(DATE, "YYYYMMDD").format("YYYY-MM-DD");
 
 
+	//DATES AND LABELS
+	if (req.query.date) {
+		INTRADAY = false;
+		DAYS_AGO = null;
+		DATE = dayjs(req.query.date.toString()).format("YYYYMMDD");
+		LOG_LABEL = dayjs.utc(DATE, "YYYYMMDD").format("YYYY-MM-DD");
+	}
+
+	else if (req.query.days_ago) {
+		INTRADAY = false;
+		DAYS_AGO = req.query.days_ago ? parseInt(req.query.days_ago.toString()) : DAYS_AGO;
+		DATE = dayjs.utc().subtract(DAYS_AGO, "d").format("YYYYMMDD");
+		LOG_LABEL = dayjs.utc(DATE, "YYYYMMDD").format("YYYY-MM-DD");
+
+	}
+
+	else {
+		INTRADAY = true;
+		DAYS_AGO = null;
+		DATE = "";
+		LOG_LABEL = `INTRADAY`;
+	}
+
+
+	//VALIDATION
 	if (!MP_TOKEN && !MP_SECRET) throw new Error("mixpanel 'token'' or 'secret' is required");
 	if (!GCS_BUCKET) throw new Error("google cloud 'bucket' is required");
 	if (!BQ_DATASET_ID) throw new Error("bigquery 'dataset' is required");
@@ -614,7 +629,7 @@ export async function build_request(client, uri, queryString = "") {
 		const { data } = req;
 		return data;
 	} catch (error) {
-		write.log(`${LOG_LABEL} → REQUEST FAILED: ${uri}:`, { message: error.message, stack: error.stack, code: error.code }, "ERROR");
+		write.log(`${LOG_LABEL} → WORKER REQUEST FAILED: ${uri}:`, { message: error.message, stack: error.stack, code: error.code }, "ERROR");
 		return {};
 	}
 }
@@ -733,7 +748,8 @@ export function aggregateImportResults(results) {
 			acc.batches += curr.batches;
 			acc.requests += curr.requests;
 			acc.retries += curr.retries;
-			acc.errors.push(...curr.errors);
+			acc.errors.push(curr.errors);
+			acc.errors = acc.errors.flat();
 			acc.duplicates += curr.duplicates;
 
 
@@ -764,8 +780,8 @@ export function aggregateImportResults(results) {
  * @param  {import('@google-cloud/storage').File} data
  */
 async function benchmark(data) {
-	const consume = timer("consume");	
-	const stream = data.createReadStream({decompress: true, validation: 'crc32c'});
+	const consume = timer("consume");
+	const stream = data.createReadStream({ decompress: true, validation: 'crc32c' });
 	let totalBytes = 0;
 	let chunks = 0;
 	let avgSize = 0;
@@ -787,7 +803,7 @@ async function benchmark(data) {
 				const duration = consume.end(); // Duration in seconds
 				const throughput = (totalBytes / (1024 * 1024)) / (consume.delta / 1000); // Throughput in MB/s
 
-				console.log(`\n\ntotal duration: ${duration}`);				
+				console.log(`\n\ntotal duration: ${duration}`);
 				console.log(`Total chunks: ${comma(chunks)}`);
 				console.log(`Total bytes: ${bytesHuman(totalBytes)}`);
 				console.log(`Average chunk size: ${bytesHuman(avgSize)} bytes`);
