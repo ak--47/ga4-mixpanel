@@ -175,7 +175,6 @@ functions.http("go", async (req, res) => {
 			fileName = `${TYPE}-`.concat(fileName);
 			if (INTRADAY) fileName = `intraday-`.concat(fileName);
 			if (!INTRADAY) fileName = `${DATE}-`.concat(fileName);
-			LOG_LABEL = dayjs.utc(DATE, "YYYYMMDD").format("YYYY-MM-DD");
 
 			const watch = timer("SYNC");
 			watch.start();
@@ -528,11 +527,20 @@ export function process_request_params(req) {
 
 
 	//DATES AND LABELS
-	if (req.query.date) {
+	if (req.query.table) {
+		DATE = dayjs.utc(req.query.table.toString().split('events_')[1]).format("YYYYMMDD");
+		LOG_LABEL = dayjs.utc(DATE, "YYYYMMDD").format("YYYY-MM-DD");
+		INTRADAY = false;
+		DAYS_AGO = null;
+		BQ_TABLE_ID = req.query.table;
+	}
+	else if (req.query.date) {
 		INTRADAY = false;
 		DAYS_AGO = null;
 		DATE = dayjs(req.query.date.toString()).format("YYYYMMDD");
 		LOG_LABEL = dayjs.utc(DATE, "YYYYMMDD").format("YYYY-MM-DD");
+		BQ_TABLE_ID = `events_${DATE}`;
+
 	}
 
 	else if (req.query.days_ago) {
@@ -540,7 +548,7 @@ export function process_request_params(req) {
 		DAYS_AGO = req.query.days_ago ? parseInt(req.query.days_ago.toString()) : DAYS_AGO;
 		DATE = dayjs.utc().subtract(DAYS_AGO, "d").format("YYYYMMDD");
 		LOG_LABEL = dayjs.utc(DATE, "YYYYMMDD").format("YYYY-MM-DD");
-
+		BQ_TABLE_ID = `events_${DATE}`;
 	}
 
 	else {
@@ -548,15 +556,19 @@ export function process_request_params(req) {
 		DAYS_AGO = null;
 		DATE = "";
 		LOG_LABEL = `INTRADAY`;
+		BQ_TABLE_ID = `events_intraday`;
 	}
 
+	if (!INTRADAY && !DATE && !DAYS_AGO) throw new Error("date or days_ago is required unless intraday is true");
+
+
+	if (MP_TOKEN) creds.token = MP_TOKEN;
 
 	//VALIDATION
 	if (!MP_TOKEN && !MP_SECRET) throw new Error("mixpanel 'token'' or 'secret' is required");
 	if (!GCS_BUCKET) throw new Error("google cloud 'bucket' is required");
 	if (!BQ_DATASET_ID) throw new Error("bigquery 'dataset' is required");
-	if (!BQ_TABLE_ID) BQ_TABLE_ID = `events_${DATE}`; //date = today if not specified
-	if (MP_TOKEN) creds.token = MP_TOKEN;
+	if (!BQ_TABLE_ID) throw new Error("bigquery 'table' is required");
 
 
 	//return fully constructed query params
