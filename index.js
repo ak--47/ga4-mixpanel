@@ -623,7 +623,7 @@ export async function poll_job(job) {
  */
 export async function build_request(client, uri, queryString = "") {
 	let retryAttempt = 0;
-	try {		
+	try {
 		const req = await client.request({
 			url: RUNTIME_URL + "?" + queryString,
 			method: "POST",
@@ -642,7 +642,33 @@ export async function build_request(client, uri, queryString = "") {
 					const statusCode = error?.response?.status?.toString() || "";
 					retryAttempt++;
 					if (VERBOSE) write.log(`${LOG_LABEL} → retry #${retryAttempt} for ${uri}`, { statusCode, message: error.message, stack: error.stack }, "DEBUG");
+				},
+				retryDelay: 500,				
+				shouldRetry: function (err) {
+					// Retry on network errors (no response received)
+					if (!err.response) {
+						return true;
+					}
+
+					if (retryAttempt > 5) {
+						return false;
+					}
+
+					// Retry on server errors (5xx status codes)
+					const statusCode = err?.response?.status?.toString();
+					if (statusCode.startsWith("5")) {
+						return true;
+					}
+
+					// Retry on auth errors (4xx status codes)
+					if (statusCode.startsWith("4")) {
+						return true;
+					}
+
+					// Do not retry for other types of errors
+					return false;
 				}
+
 			},
 		});
 		const { data } = req;
