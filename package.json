@@ -9,7 +9,7 @@
 		"deploy:run": "sh deploy_cloud_run.sh",
 		"test": "node --no-warnings --experimental-vm-modules node_modules/jest/bin/jest.js",
 		"coverage": "node --no-warnings --experimental-vm-modules node_modules/jest/bin/jest.js --coverage && open ./tests/coverage/lcov-report/index.html",
-		"dev": "RUNTIME=dev nodemon --exec 'functions-framework --target=go --source . --signature-type=http | ./prettyLog.sh",
+		"dev": "RUNTIME=dev nodemon --exec 'functions-framework --target=go --source . --signature-type=http | ./prettyLog.sh'",
 		"mock": "functions-framework --target=go --source . --signature-type=http 2>&1 | ./prettyLog.sh",
 		"trigger": "sh trigger.sh"
 	},

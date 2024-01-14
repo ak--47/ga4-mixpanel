@@ -405,6 +405,8 @@ export async function storage_to_mixpanel(filePath) {
 	if (opts.recordType === "event") {
 		if (filePath.includes("intraday")) opts.tags = { import_type: "intraday" };
 		if (!filePath.includes("intraday")) opts.tags = { import_type: `daily: ${dateLabel || ""}` };
+		opts.dedupe = false;
+		opts.abridged = true;
 	}
 
 	if (opts.recordType === "user") {
@@ -567,9 +569,9 @@ export function process_request_params(req) {
 	//VALIDATION
 	if (!MP_TOKEN && !MP_SECRET) throw new Error("mixpanel 'token'' or 'secret' is required");
 	if (!GCS_BUCKET) throw new Error("google cloud 'bucket' is required");
-	
+
 	if (req.method === "POST" && !req.body.file) throw new Error("POST request must include a file");
-	if (req.method === "GET") {			
+	if (req.method === "GET") {
 		if (!BQ_DATASET_ID) throw new Error("bigquery 'dataset' is required");
 		if (!BQ_TABLE_ID) throw new Error("bigquery 'table' is required");
 	}
@@ -620,8 +622,8 @@ export async function poll_job(job) {
  * @return {Promise<ImportResults | {}>}
  */
 export async function build_request(client, uri, queryString = "") {
-	try {
-		let retryAttempt = 0;
+	let retryAttempt = 0;
+	try {		
 		const req = await client.request({
 			url: RUNTIME_URL + "?" + queryString,
 			method: "POST",
@@ -636,7 +638,6 @@ export async function build_request(client, uri, queryString = "") {
 					[400, 499],
 					[500, 599],
 				],
-				retryDelay: 1000,
 				onRetryAttempt: (error) => {
 					const statusCode = error?.response?.status?.toString() || "";
 					retryAttempt++;
@@ -647,7 +648,7 @@ export async function build_request(client, uri, queryString = "") {
 		const { data } = req;
 		return data;
 	} catch (error) {
-		write.log(`${LOG_LABEL} → WORKER REQUEST FAILED: ${uri}:`, { message: error.message, stack: error.stack, code: error.code }, "ERROR");
+		write.log(`${LOG_LABEL} → WORKER REQUEST FAILED: ${uri}:`, { message: error.message, stack: error.stack, code: error.code, RETRIES: retryAttempt }, "ERROR");
 		return {};
 	}
 }
@@ -755,29 +756,38 @@ export function aggregateImportResults(results) {
 		 */
 		function (acc, curr) {
 			// Summing properties
-			acc.success += curr.success;
-			acc.failed += curr.failed;
-			acc.total += curr.total;
-			acc.bytes += curr.bytes;
-			acc.duration += curr.duration;
-			acc.rateLimit += curr.rateLimit;
-			acc.clientErrors += curr.clientErrors;
-			acc.serverErrors += curr.serverErrors;
-			acc.batches += curr.batches;
-			acc.requests += curr.requests;
-			acc.retries += curr.retries;
-			acc.errors.push(curr.errors);
-			acc.errors = acc.errors.flat();
-			acc.duplicates += curr.duplicates;
+			if (curr.success) acc.success += curr.success;
+			if (curr.failed) acc.failed += curr.failed;
+			if (curr.total) acc.total += curr.total;
+			if (curr.bytes) acc.bytes += curr.bytes;
+			if (curr.duration) acc.duration += curr.duration;
+			if (curr.rateLimit) acc.rateLimit += curr.rateLimit;
+			if (curr.clientErrors) acc.clientErrors += curr.clientErrors;
+			if (curr.serverErrors) acc.serverErrors += curr.serverErrors;
+			if (curr.batches) acc.batches += curr.batches;
+			if (curr.requests) acc.requests += curr.requests;
+			if (curr.retries) acc.retries += curr.retries;
+			if (curr.duplicates) acc.duplicates += curr.duplicates;
 
+			// Concatenating arrays
+			if (curr.errors.length) {
+				if (Array.isArray(curr.errors)) {
+
+					for (const error of curr.errors) {
+						acc.errors.push(error);
+					}
+				}
+				else {
+					acc.errors.push(curr.errors);
+				}
+			}
 
 			// Accumulating for averaging later
-			acc.eps += curr.eps;
-			acc.mbps += curr.mbps;
-			acc.rps += curr.rps;
+			if (curr.eps) acc.eps += curr.eps;
+			if (curr.mbps) acc.mbps += curr.mbps;
+			if (curr.rps) acc.rps += curr.rps;
 
 			// ... handle other properties as needed
-
 			return acc;
 		},
 		// @ts-ignore
@@ -826,7 +836,6 @@ async function benchmark(data) {
 				console.log(`Total bytes: ${bytesHuman(totalBytes)}`);
 				console.log(`Average chunk size: ${bytesHuman(avgSize)} bytes`);
 				console.log(`Throughput: ${throughput.toFixed(2)} MB/s`);
-				debugger;
 				resolve({ duration, throughput });
 			})
 			.on("error", (error) => {
