@@ -64,6 +64,7 @@ let {
 	INSERT_ID_TUPLE = ["event_name", "user_pseudo_id", "event_bundle_sequence_id"],
 	TIME_CONVERSION = "seconds",
 	GCP_PROJECT = "",
+	SUBQUERIES = [], // extra columns to add to the query
 } = JSON_CONFIG;
 
 
@@ -89,6 +90,7 @@ if (process.env.TIME_CONVERSION) TIME_CONVERSION = process.env.TIME_CONVERSION;
 if (process.env.INTRADAY) INTRADAY = toBool(process.env.INTRADAY);
 if (process.env.SET_INSERT_ID) SET_INSERT_ID = toBool(process.env.SET_INSERT_ID);
 if (process.env.VERBOSE) VERBOSE = toBool(process.env.VERBOSE);
+if (process.env.SUBQUERIES) SUBQUERIES = process.env.SUBQUERIES.split("|");
 
 let DATE;
 let LOG_LABEL;
@@ -167,7 +169,8 @@ functions.http("go", async (req, res) => {
 				URL,
 				RUNTIME_URL,
 				TIME_CONVERSION,
-				SET_INSERT_ID
+				SET_INSERT_ID,
+				SUBQUERIES
 			});
 
 
@@ -184,7 +187,7 @@ functions.http("go", async (req, res) => {
 			//allow for runtime url to be passed in
 			if (URL) RUNTIME_URL = URL;
 
-			const importTasks = await EXTRACT_GET(INTRADAY, queryString);
+			const importTasks = await EXTRACT_GET(INTRADAY, queryString, SUBQUERIES);
 
 			write.log(`${LOG_LABEL} → SYNC COMPLETE: ${watch.end()}`, importTasks, "NOTICE");
 
@@ -232,11 +235,11 @@ CORE API
 ----
 */
 
-export async function EXTRACT_GET(INTRADAY = true, queryString = "") {
+export async function EXTRACT_GET(INTRADAY = true, queryString = "", SUBQUERIES = []) {
 	const watch = timer("e2e");
 	watch.start();
 	try {
-		const QUERY = await build_sql_query(BQ_DATASET_ID, BQ_TABLE_ID, INTRADAY, LOOKBACK, LATE, TYPE, SQL);
+		const QUERY = await build_sql_query(BQ_DATASET_ID, BQ_TABLE_ID, INTRADAY, LOOKBACK, LATE, TYPE, SQL, SUBQUERIES);
 		let GCS_URIs;
 		if (INTRADAY) GCS_URIs = await bigquery_to_storage(QUERY);
 		if (!INTRADAY) GCS_URIs = await bigquery_to_storage(null, BQ_TABLE_ID);
@@ -643,7 +646,7 @@ export async function build_request(client, uri, queryString = "") {
 					retryAttempt++;
 					if (VERBOSE) write.log(`${LOG_LABEL} → retry #${retryAttempt} for ${uri}`, { statusCode, message: error.message, stack: error.stack }, "DEBUG");
 				},
-				retryDelay: 500,				
+				retryDelay: 500,
 				shouldRetry: function (err) {
 					// Retry on network errors (no response received)
 					if (!err.response) {
@@ -685,47 +688,47 @@ export async function build_request(client, uri, queryString = "") {
  * @param  {number} [lookBackWindow=3600]
  * @param  {number} [late=60]
  * @param  {string} [type="event"]
+ * @param  {string} [SQL="SELECT *"]
+ * @param  {string} [SUBQUERIES=[]]
  */
-export async function build_sql_query(BQ_DATASET_ID, TABLE_ID, intraday = false, lookBackWindow = 3600, late = 60, type = "event", SQL = "SELECT *") {
-	// i.e. intraday vs full day
-	// .events_intraday_*
-	// .events_*  or .events_20231222
-	let query = `${SQL} FROM \`${BQ_DATASET_ID}.`;
+export async function build_sql_query(BQ_DATASET_ID, TABLE_ID, intraday = false, lookBackWindow = 3600, late = 60, type = "event", SQL = "SELECT *", SUBQUERIES = []) {
+	// Start with the basic SELECT clause, assuming SQL might already have a FROM
+	let query = SQL.includes('FROM') ? SQL : `${SQL} FROM \`${BQ_DATASET_ID}.`;
 
-	// table name
-	if (intraday) {
-		query += `events_intraday_*\``;
-	} else {
-		query += `${TABLE_ID}\``;
+	// Append the appropriate table reference
+	query += intraday ? `events_intraday_*\`` : `${TABLE_ID}\``;
+
+	// If subqueries are provided, integrate them into the main SELECT clause
+	if (SUBQUERIES.length) {
+		let subquerySelections = SUBQUERIES.map(subquery => `(${subquery})`).join(', ');
+		query = query.replace('SELECT *', `SELECT *, ${subquerySelections}`);
 	}
 
-	// where
-	if (intraday || type === "user") {
-		query += `\nWHERE\n`;
-	}
+	// Array to hold parts of the WHERE clause
+	let whereConditions = [];
 
-	// user props
+	// User properties condition for user-type queries
 	if (type === "user") {
-		query += `(user_properties IS NOT NULL)`;
-	}
-	if (intraday && type === "user") {
-		query += `\nAND\n`;
+		whereConditions.push("user_properties IS NOT NULL");
 	}
 
-	// intraday events
-	// events in the last lookBackWindow (seconds)
+	// Conditions specific to intraday queries
 	if (intraday) {
-		query += `((TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), TIMESTAMP_MILLIS(CAST(event_timestamp / 1000 as INT64)), SECOND) <= ${lookBackWindow})`;
-		query += `\nOR\n`;
+		let intradayConditions = [
+			`TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), TIMESTAMP_MILLIS(CAST(event_timestamp / 1000 as INT64)), SECOND) <= ${lookBackWindow}`,
+			`event_server_timestamp_offset > ${late * 1000000} AND TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), TIMESTAMP_MILLIS(CAST(event_timestamp / 1000 as INT64)), SECOND) <= ${lookBackWindow * 2}`
+		];
+		whereConditions.push(`(${intradayConditions.join(' OR ')})`);
 	}
 
-	// events that are late (seconds)
-	if (intraday) {
-		query += `(event_server_timestamp_offset > ${late * 1000000} AND TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), TIMESTAMP_MILLIS(CAST(event_timestamp / 1000 as INT64)), SECOND) <= ${lookBackWindow * 2}))`;
+	// Append WHERE conditions to the query if any
+	if (whereConditions.length) {
+		query += ` WHERE ${whereConditions.join(' AND ')}`;
 	}
 
 	return Promise.resolve(query);
 }
+
 
 
 export async function checkFileExists(fileObject, filePath) {
@@ -735,7 +738,7 @@ export async function checkFileExists(fileObject, filePath) {
 		[exists] = await fileObject.exists();
 		if (exists) break;
 
-		if (VERBOSE) write.log(`${LOG_LABEL} → ${filePath} not found retry (${attempt}/10)`, {}, "INFO");
+		if (VERBOSE) write.log(`${LOG_LABEL} → ${filePath} not found retry (${attempt}/10)`, {}, "DEBUG");
 		await sleep(10000); // 10 seconds delay
 	}
 
@@ -796,7 +799,7 @@ export function aggregateImportResults(results) {
 			if (curr.duplicates) acc.duplicates += curr.duplicates;
 
 			// Concatenating arrays
-			if (curr.errors.length) {
+			if (curr?.errors?.length) {
 				if (Array.isArray(curr.errors)) {
 
 					for (const error of curr.errors) {
