@@ -1,17 +1,18 @@
 {
 	"name": "ga4-mixpanel",
-	"version": "1.0.0",
+	"version": "1.0.1",
 	"description": "ETL data from Google Analytics 4 to Mixpanel (through bigquey and cloud storage)",
 	"main": "index.js",
 	"scripts": {
 		"start": "functions-framework --target=go --source . --signature-type=http --port=8080",
-		"deploy:func": "sh deploy_cloud_functions.sh",
-		"deploy:run": "sh deploy_cloud_run.sh",
+		"deploy:func": "./scripts/deploy_cloud_functions.sh",
+		"deploy:run": "./scripts/deploy_cloud_run.sh",
 		"test": "node --no-warnings --experimental-vm-modules node_modules/jest/bin/jest.js",
 		"coverage": "node --no-warnings --experimental-vm-modules node_modules/jest/bin/jest.js --coverage && open ./tests/coverage/lcov-report/index.html",
 		"dev": "RUNTIME=dev nodemon --exec 'functions-framework --target=go --source . --signature-type=http | ./prettyLog.sh'",
 		"mock": "functions-framework --target=go --source . --signature-type=http 2>&1 | ./prettyLog.sh",
-		"trigger": "sh trigger.sh"
+		"trigger": "./scripts/trigger.sh",
+		"deps": "./scripts/deps.sh"
 	},
 	"keywords": [],
 	"author": "ak@mixpanel.com",
@@ -21,10 +22,10 @@
 		"@google-cloud/bigquery": "^7.3.0",
 		"@google-cloud/functions-framework": "^3.3.0",
 		"@google-cloud/storage": "^7.7.0",
-		"ak-tools": "^1.0.51",
+		"ak-tools": "^1.0.63",
 		"dayjs": "^1.11.10",
 		"dotenv": "^16.3.1",
-		"mixpanel-import": "^2.5.30",
+		"mixpanel-import": "^2.5.554",
 		"p-limit": "^5.0.0"
 	},
 	"devDependencies": {

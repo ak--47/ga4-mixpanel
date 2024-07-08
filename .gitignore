@@ -24,6 +24,7 @@ yarn-error.log
 /tests/testData
 /coverage/*
 !/coverage/.gitkeep
+scripts/trigger.sh
 
 trigger.sh
 

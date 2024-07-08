@@ -17,12 +17,14 @@ import { GoogleAuth } from "google-auth-library";
 // LOCAL DEPS
 import Mixpanel from "mixpanel-import";
 import pLimit from "p-limit";
-import { parseGCSUri, timer, isNil, sleep, toBool, logger, uid, progress, comma, bytesHuman } from "ak-tools";
+import { parseGCSUri, timer, isNil, sleep, toBool, logger, uid, comma, bytesHuman } from "ak-tools";
 import dayjs from "dayjs";
 import utc from "dayjs/plugin/utc.js";
 dayjs.extend(utc);
 import dotenv from "dotenv";
 dotenv.config();
+import readline from 'readline';
+
 
 // LABELS
 const timeFileLabel = dayjs.utc().format("MM-DD-HH:mm");
@@ -64,7 +66,8 @@ let {
 	INSERT_ID_TUPLE = ["event_name", "user_pseudo_id", "event_bundle_sequence_id"],
 	TIME_CONVERSION = "seconds",
 	GCP_PROJECT = "",
-	SUBQUERIES = [], // extra columns to add to the query
+	WHITELIST = {},
+	BLACKLIST = {}
 } = JSON_CONFIG;
 
 
@@ -90,7 +93,7 @@ if (process.env.TIME_CONVERSION) TIME_CONVERSION = process.env.TIME_CONVERSION;
 if (process.env.INTRADAY) INTRADAY = toBool(process.env.INTRADAY);
 if (process.env.SET_INSERT_ID) SET_INSERT_ID = toBool(process.env.SET_INSERT_ID);
 if (process.env.VERBOSE) VERBOSE = toBool(process.env.VERBOSE);
-if (process.env.SUBQUERIES) SUBQUERIES = process.env.SUBQUERIES.split("|");
+
 
 let DATE;
 let LOG_LABEL;
@@ -124,6 +127,8 @@ const opts = {
 	compress: false,
 	dryRun: false,
 	flattenData: true,
+	comboBlackList: BLACKLIST,
+	comboWhiteList: WHITELIST,
 	vendorOpts: {
 		set_insert_id: SET_INSERT_ID,
 		insert_id_tuple: INSERT_ID_TUPLE,
@@ -170,7 +175,6 @@ functions.http("go", async (req, res) => {
 				RUNTIME_URL,
 				TIME_CONVERSION,
 				SET_INSERT_ID,
-				SUBQUERIES
 			});
 
 
@@ -187,7 +191,7 @@ functions.http("go", async (req, res) => {
 			//allow for runtime url to be passed in
 			if (URL) RUNTIME_URL = URL;
 
-			const importTasks = await EXTRACT_GET(INTRADAY, queryString, SUBQUERIES);
+			const importTasks = await EXTRACT_GET(INTRADAY, queryString);
 
 			write.log(`${LOG_LABEL} → SYNC COMPLETE: ${watch.end()}`, importTasks, "NOTICE");
 
@@ -235,11 +239,11 @@ CORE API
 ----
 */
 
-export async function EXTRACT_GET(INTRADAY = true, queryString = "", SUBQUERIES = []) {
+export async function EXTRACT_GET(INTRADAY = true, queryString = "") {
 	const watch = timer("e2e");
 	watch.start();
 	try {
-		const QUERY = await build_sql_query(BQ_DATASET_ID, BQ_TABLE_ID, INTRADAY, LOOKBACK, LATE, TYPE, SQL, SUBQUERIES);
+		const QUERY = await build_sql_query(BQ_DATASET_ID, BQ_TABLE_ID, INTRADAY, LOOKBACK, LATE, TYPE, SQL);
 		let GCS_URIs;
 		if (INTRADAY) GCS_URIs = await bigquery_to_storage(QUERY);
 		if (!INTRADAY) GCS_URIs = await bigquery_to_storage(null, BQ_TABLE_ID);
@@ -297,8 +301,9 @@ export async function STORAGE_DELETE() {
 		return deleted;
 	}
 	catch (error) {
-		write.log(`STORAGE DELETE FAIL: ${watch.end()}`, { message: error.message, stack: error.stack }, "CRITICAL");
-		throw error;
+		write.log(`STORAGE DELETE FAIL: ${watch.end()}`, { message: error.message, stack: error.stack }, "NOTICE");
+		// throw error;
+		return 0;
 	}
 }
 
@@ -689,20 +694,13 @@ export async function build_request(client, uri, queryString = "") {
  * @param  {number} [late=60]
  * @param  {string} [type="event"]
  * @param  {string} [SQL="SELECT *"]
- * @param  {string} [SUBQUERIES=[]]
  */
-export async function build_sql_query(BQ_DATASET_ID, TABLE_ID, intraday = false, lookBackWindow = 3600, late = 60, type = "event", SQL = "SELECT *", SUBQUERIES = []) {
+export async function build_sql_query(BQ_DATASET_ID, TABLE_ID, intraday = false, lookBackWindow = 3600, late = 60, type = "event", SQL = "SELECT *") {
 	// Start with the basic SELECT clause, assuming SQL might already have a FROM
 	let query = SQL.includes('FROM') ? SQL : `${SQL} FROM \`${BQ_DATASET_ID}.`;
 
 	// Append the appropriate table reference
 	query += intraday ? `events_intraday_*\`` : `${TABLE_ID}\``;
-
-	// If subqueries are provided, integrate them into the main SELECT clause
-	if (SUBQUERIES.length) {
-		let subquerySelections = SUBQUERIES.map(subquery => `(${subquery})`).join(', ');
-		query = query.replace('SELECT *', `SELECT *, ${subquerySelections}`);
-	}
 
 	// Array to hold parts of the WHERE clause
 	let whereConditions = [];
@@ -715,8 +713,8 @@ export async function build_sql_query(BQ_DATASET_ID, TABLE_ID, intraday = false,
 	// Conditions specific to intraday queries
 	if (intraday) {
 		let intradayConditions = [
-			`TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), TIMESTAMP_MILLIS(CAST(event_timestamp / 1000 as INT64)), SECOND) <= ${lookBackWindow}`,
-			`event_server_timestamp_offset > ${late * 1000000} AND TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), TIMESTAMP_MILLIS(CAST(event_timestamp / 1000 as INT64)), SECOND) <= ${lookBackWindow * 2}`
+			`(TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), TIMESTAMP_MILLIS(CAST(event_timestamp / 1000 as INT64)), SECOND) <= ${lookBackWindow})`,
+			`(event_server_timestamp_offset > ${late * 1000000} AND TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), TIMESTAMP_MILLIS(CAST(event_timestamp / 1000 as INT64)), SECOND) <= ${lookBackWindow * 2})`
 		];
 		whereConditions.push(`(${intradayConditions.join(' OR ')})`);
 	}
@@ -884,3 +882,12 @@ async function benchmark(data) {
 	// process.exit(0);
 	return streamPromise;
 }
+
+
+function progress(message) {
+	// Move the cursor to the beginning of the line
+	readline.cursorTo(process.stdout, 0);
+	// Clear the line
+	readline.clearLine(process.stdout, 0);
+	process.stdout.write(message);
+};
