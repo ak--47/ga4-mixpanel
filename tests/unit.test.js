@@ -108,8 +108,8 @@ describe("process req params", () => {
 describe("build_sql_query", () => {
 	test("intraday", async () => {
 		const query = await build_sql_query("my_dataset", "my_table", true);
-
-		expect(query).toBe(`SELECT * FROM \`my_dataset.events_intraday_*\`\nWHERE\n((TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), TIMESTAMP_MILLIS(CAST(event_timestamp / 1000 as INT64)), SECOND) <= 3600)\nOR\n(event_server_timestamp_offset > 60000000 AND TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), TIMESTAMP_MILLIS(CAST(event_timestamp / 1000 as INT64)), SECOND) <= 7200))`);
+		const expected = `SELECT * FROM \`my_dataset.events_intraday_*\` WHERE ((TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), TIMESTAMP_MILLIS(CAST(event_timestamp / 1000 as INT64)), SECOND) <= 3600) OR (event_server_timestamp_offset > 60000000 AND TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), TIMESTAMP_MILLIS(CAST(event_timestamp / 1000 as INT64)), SECOND) <= 7200))`
+		expect(query).toBe(expected);
 	});
 
 	test("full-day", async () => {
@@ -121,7 +121,7 @@ describe("build_sql_query", () => {
 	test("user properties", async () => {
 		const query = await build_sql_query("my_dataset", "my_table", false, 3600, 60, "user");
 
-		expect(query).toBe("SELECT * FROM `my_dataset.my_table`\nWHERE\n(user_properties IS NOT NULL)");
+		expect(query).toBe("SELECT * FROM `my_dataset.my_table` WHERE user_properties IS NOT NULL");
 	});
 
 	test("custom sql", async () => {

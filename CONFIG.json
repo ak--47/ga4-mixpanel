@@ -16,6 +16,7 @@
 	"VERBOSE": false,
 	"DAYS_AGO": 2,
 	"TYPE": "event",
-	"TIME_CONVERSION": "seconds"
-	
+	"TIME_CONVERSION": "seconds",
+	"WHITELIST": {},
+	"BLACKLIST": {}	
 }

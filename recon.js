@@ -1,5 +1,5 @@
 import http from "http";
-import { sLog } from "ak-tools";
+import { cLog } from "ak-tools";
 
 let cachedMetadata = {};
 
@@ -72,11 +72,11 @@ async function gatherMetadata() {
 		cachedMetadata.env = process.env; // Environment variables are not expected to change
 
 		// Log the collected metadata
-		sLog("Collected Metadata:", cachedMetadata);
+		cLog(cachedMetadata, "Collected Metadata:");
 
 		return cachedMetadata;
 	} catch (e) {
-		sLog("Error gathering metadata:", e.message);
+		cLog(e.message, "Error gathering metadata:");
 		return cachedMetadata; // Return the cached metadata anyway		
 	}
 }
@@ -86,7 +86,7 @@ async function main() {
 		return await gatherMetadata();
 	} catch (error) {
 		// Handle errors that may have occurred during metadata gathering
-		sLog("UNKNOWN ERROR:", error, "CRITICAL");
+		cLog("UNKNOWN ERROR:", error, "CRITICAL");
 		return { "error": error.message, "stack": error.stack };
 	}
 }

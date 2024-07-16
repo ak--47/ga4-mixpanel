@@ -17,12 +17,14 @@ import { GoogleAuth } from "google-auth-library";
 // LOCAL DEPS
 import Mixpanel from "mixpanel-import";
 import pLimit from "p-limit";
-import { parseGCSUri, timer, isNil, sleep, toBool, logger, uid, progress, comma, bytesHuman } from "ak-tools";
+import { parseGCSUri, timer, isNil, sleep, toBool, logger, uid, comma, bytesHuman } from "ak-tools";
 import dayjs from "dayjs";
 import utc from "dayjs/plugin/utc.js";
 dayjs.extend(utc);
 import dotenv from "dotenv";
 dotenv.config();
+import readline from 'readline';
+
 
 // LABELS
 const timeFileLabel = dayjs.utc().format("MM-DD-HH:mm");
@@ -64,6 +66,8 @@ let {
 	INSERT_ID_TUPLE = ["event_name", "user_pseudo_id", "event_bundle_sequence_id"],
 	TIME_CONVERSION = "seconds",
 	GCP_PROJECT = "",
+	WHITELIST = {},
+	BLACKLIST = {}
 } = JSON_CONFIG;
 
 
@@ -89,6 +93,7 @@ if (process.env.TIME_CONVERSION) TIME_CONVERSION = process.env.TIME_CONVERSION;
 if (process.env.INTRADAY) INTRADAY = toBool(process.env.INTRADAY);
 if (process.env.SET_INSERT_ID) SET_INSERT_ID = toBool(process.env.SET_INSERT_ID);
 if (process.env.VERBOSE) VERBOSE = toBool(process.env.VERBOSE);
+
 
 let DATE;
 let LOG_LABEL;
@@ -122,6 +127,8 @@ const opts = {
 	compress: false,
 	dryRun: false,
 	flattenData: true,
+	comboBlackList: BLACKLIST,
+	comboWhiteList: WHITELIST,
 	vendorOpts: {
 		set_insert_id: SET_INSERT_ID,
 		insert_id_tuple: INSERT_ID_TUPLE,
@@ -167,7 +174,7 @@ functions.http("go", async (req, res) => {
 				URL,
 				RUNTIME_URL,
 				TIME_CONVERSION,
-				SET_INSERT_ID
+				SET_INSERT_ID,
 			});
 
 
@@ -294,8 +301,9 @@ export async function STORAGE_DELETE() {
 		return deleted;
 	}
 	catch (error) {
-		write.log(`STORAGE DELETE FAIL: ${watch.end()}`, { message: error.message, stack: error.stack }, "CRITICAL");
-		throw error;
+		write.log(`STORAGE DELETE FAIL: ${watch.end()}`, { message: error.message, stack: error.stack }, "NOTICE");
+		// throw error;
+		return 0;
 	}
 }
 
@@ -643,7 +651,7 @@ export async function build_request(client, uri, queryString = "") {
 					retryAttempt++;
 					if (VERBOSE) write.log(`${LOG_LABEL} → retry #${retryAttempt} for ${uri}`, { statusCode, message: error.message, stack: error.stack }, "DEBUG");
 				},
-				retryDelay: 500,				
+				retryDelay: 500,
 				shouldRetry: function (err) {
 					// Retry on network errors (no response received)
 					if (!err.response) {
@@ -685,47 +693,40 @@ export async function build_request(client, uri, queryString = "") {
  * @param  {number} [lookBackWindow=3600]
  * @param  {number} [late=60]
  * @param  {string} [type="event"]
+ * @param  {string} [SQL="SELECT *"]
  */
 export async function build_sql_query(BQ_DATASET_ID, TABLE_ID, intraday = false, lookBackWindow = 3600, late = 60, type = "event", SQL = "SELECT *") {
-	// i.e. intraday vs full day
-	// .events_intraday_*
-	// .events_*  or .events_20231222
-	let query = `${SQL} FROM \`${BQ_DATASET_ID}.`;
+	// Start with the basic SELECT clause, assuming SQL might already have a FROM
+	let query = SQL.includes('FROM') ? SQL : `${SQL} FROM \`${BQ_DATASET_ID}.`;
 
-	// table name
-	if (intraday) {
-		query += `events_intraday_*\``;
-	} else {
-		query += `${TABLE_ID}\``;
-	}
+	// Append the appropriate table reference
+	query += intraday ? `events_intraday_*\`` : `${TABLE_ID}\``;
 
-	// where
-	if (intraday || type === "user") {
-		query += `\nWHERE\n`;
-	}
+	// Array to hold parts of the WHERE clause
+	let whereConditions = [];
 
-	// user props
+	// User properties condition for user-type queries
 	if (type === "user") {
-		query += `(user_properties IS NOT NULL)`;
-	}
-	if (intraday && type === "user") {
-		query += `\nAND\n`;
+		whereConditions.push("user_properties IS NOT NULL");
 	}
 
-	// intraday events
-	// events in the last lookBackWindow (seconds)
+	// Conditions specific to intraday queries
 	if (intraday) {
-		query += `((TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), TIMESTAMP_MILLIS(CAST(event_timestamp / 1000 as INT64)), SECOND) <= ${lookBackWindow})`;
-		query += `\nOR\n`;
+		let intradayConditions = [
+			`(TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), TIMESTAMP_MILLIS(CAST(event_timestamp / 1000 as INT64)), SECOND) <= ${lookBackWindow})`,
+			`(event_server_timestamp_offset > ${late * 1000000} AND TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), TIMESTAMP_MILLIS(CAST(event_timestamp / 1000 as INT64)), SECOND) <= ${lookBackWindow * 2})`
+		];
+		whereConditions.push(`(${intradayConditions.join(' OR ')})`);
 	}
 
-	// events that are late (seconds)
-	if (intraday) {
-		query += `(event_server_timestamp_offset > ${late * 1000000} AND TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), TIMESTAMP_MILLIS(CAST(event_timestamp / 1000 as INT64)), SECOND) <= ${lookBackWindow * 2}))`;
+	// Append WHERE conditions to the query if any
+	if (whereConditions.length) {
+		query += ` WHERE ${whereConditions.join(' AND ')}`;
 	}
 
 	return Promise.resolve(query);
 }
+
 
 
 export async function checkFileExists(fileObject, filePath) {
@@ -735,7 +736,7 @@ export async function checkFileExists(fileObject, filePath) {
 		[exists] = await fileObject.exists();
 		if (exists) break;
 
-		if (VERBOSE) write.log(`${LOG_LABEL} → ${filePath} not found retry (${attempt}/10)`, {}, "INFO");
+		if (VERBOSE) write.log(`${LOG_LABEL} → ${filePath} not found retry (${attempt}/10)`, {}, "DEBUG");
 		await sleep(10000); // 10 seconds delay
 	}
 
@@ -796,7 +797,7 @@ export function aggregateImportResults(results) {
 			if (curr.duplicates) acc.duplicates += curr.duplicates;
 
 			// Concatenating arrays
-			if (curr.errors.length) {
+			if (curr?.errors?.length) {
 				if (Array.isArray(curr.errors)) {
 
 					for (const error of curr.errors) {
@@ -881,3 +882,12 @@ async function benchmark(data) {
 	// process.exit(0);
 	return streamPromise;
 }
+
+
+function progress(message) {
+	// Move the cursor to the beginning of the line
+	readline.cursorTo(process.stdout, 0);
+	// Clear the line
+	readline.clearLine(process.stdout, 0);
+	process.stdout.write(message);
+};
